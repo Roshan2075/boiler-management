@@ -1,2406 +1,576 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import React,{useEffect,useState} from 'react';
+import {createClient} from '@supabase/supabase-js';
 import * as XLSX from 'xlsx-js-style';
 import {
-  LayoutDashboard, ClipboardList, Receipt, FileText, FolderOpen,
-  LogOut, Upload, Download, Plus, RefreshCw, LockKeyhole,
-  Factory, Menu, X, Trash2, Users, Eye, Printer, IndianRupee
+ LayoutDashboard,ClipboardList,Receipt,FileText,FolderOpen,
+ LogOut,Upload,Download,Plus,RefreshCw,LockKeyhole,
+ Factory,Menu,X,Trash2,Eye,Printer,Building2
 } from 'lucide-react';
-
-const url = import.meta.env.VITE_SUPABASE_URL;
-const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-  import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-const supabase = url && key ? createClient(url, key) : null;
-const ADMIN_EMAIL = 'rdansena25@gmail.com';
-
-const DEPTS = [
-  'Structure',
-  'Pressure Part',
-  'Non Pressure Part',
-  'Rotary Part',
-  'Bunker',
-  'LP Piping',
-  'Trim Piping'
-];
-
-const MONTHS = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December'
-];
-
-const blank = {
-  work_date: new Date().toISOString().slice(0, 10),
-  department: 'Structure',
-  pg: '',
-  ma: '',
-  du: '',
-  description: '',
-  quantity: 0,
-  unit_weight: 0,
-  pre_assembly: 0,
-  placement: 0,
-  alignment: 0,
-  bolting: 0,
-  remark: ''
-};
-
-function num(v) {
-  const n = Number(
-    String(v ?? 0)
-      .replace(/,/g, '')
-      .replace(/[₹\s]/g, '')
-      .replace(/[^\d.-]/g, '')
-  );
-  return Number.isFinite(n) ? n : 0;
-}
-
-function weight(q, u) {
-  return num(q) * num(u);
-}
-
-function norm(v) {
-  return String(v ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function deptName(v) {
-  const n = norm(v);
-  return DEPTS.find(d => norm(d) === n) || '';
-}
-
-function excelDate(v) {
-  if (v instanceof Date && !isNaN(v)) {
-    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, '0')}-${String(v.getDate()).padStart(2, '0')}`;
-  }
-
-  if (typeof v === 'number') {
-    const d = XLSX.SSF.parse_date_code(v);
-    if (d) {
-      return `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}`;
-    }
-  }
-
-  const s = String(v ?? '').trim();
-
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-
-  // DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY
-  let m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
-
-  if (m) {
-    let y = Number(m[3]);
-    if (y < 100) y += 2000;
-
-    return `${y}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-  }
-
-  // 01 NOV 2026
-  m = s.match(/^(\d{1,2})[\s-]+([A-Za-z]{3,})[\s-]+(\d{2,4})$/);
-
-  if (m) {
-    const months = [
-      'jan', 'feb', 'mar', 'apr', 'may', 'jun',
-      'jul', 'aug', 'sep', 'oct', 'nov', 'dec'
-    ];
-
-    const mo = months.findIndex(x =>
-      m[2].toLowerCase().startsWith(x)
-    ) + 1;
-
-    let y = Number(m[3]);
-    if (y < 100) y += 2000;
-
-    if (mo) {
-      return `${y}-${String(mo).padStart(2, '0')}-${m[1].padStart(2, '0')}`;
-    }
-  }
-
-  return '';
-}
-
-function parseBillText(text) {
-  return String(text || '')
-    .split(/\r?\n/)
-    .filter(line => line.trim())
-    .map(line =>
-      line.split('\t').length > 1
-        ? line.split('\t')
-        : line.split('|').map(x => x.trim())
-    );
-}
-
-function billRows(bill) {
-  return bill?.abstract_data?.rows || [];
-}
-
-function money(v) {
-  return '₹' + num(v).toLocaleString('en-IN', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  });
-}
-
-/*
- * Excel Abstract से Bill की जानकारी पहचानने का प्रयास।
- * पूरी Original Abstract Table भी अलग से सुरक्षित रहती है।
- */
-function extractBillDetails(rows, type) {
-  const result = {
-    agency_name: '',
-    project_name: '',
-    bill_no: '',
-    bill_date: '',
-    billing_period: '',
-    previous_amount: 0,
-    current_amount: 0,
-    cumulative_amount: 0,
-    gst_amount: 0,
-    gross_bill: 0,
-    net_payable: 0,
-    total_amount: 0
-  };
-
-  const allRows = (rows || []).map(row =>
-    Array.isArray(row) ? row : Object.values(row || {})
-  );
-
-  const flat = allRows.flat().map(v => String(v ?? '').trim());
-
-  function findValue(labels) {
-    const wanted = labels.map(norm);
-
-    for (const row of allRows) {
-      for (let i = 0; i < row.length; i++) {
-        const cell = norm(row[i]);
-
-        if (wanted.some(label =>
-          cell === label ||
-          cell.startsWith(label) ||
-          cell.includes(label)
-        )) {
-          for (let j = i + 1; j < row.length; j++) {
-            const value = String(row[j] ?? '').trim();
-            if (value && !wanted.includes(norm(value))) return value;
-          }
-
-          const nextRow = allRows[allRows.indexOf(row) + 1];
-          if (nextRow) {
-            for (const value of nextRow) {
-              if (String(value ?? '').trim()) return String(value).trim();
-            }
-          }
-        }
-      }
-    }
-
-    return '';
-  }
-
-  const billNo = findValue([
-    'bill no', 'bill number', 'ra bill no', 'ra no',
-    'running account bill no', 'invoice no'
-  ]);
-
-  const billDate = findValue([
-    'bill date', 'invoice date', 'date of bill',
-    'ra bill date'
-  ]);
-
-  const periodFrom = findValue([
-    'billing period', 'period', 'bill period',
-    'period of bill'
-  ]);
-
-  const agency = findValue([
-    'agency name', 'contractor name', 'vendor name',
-    'name of contractor', 'name of agency'
-  ]);
-
-  const project = findValue([
-    'project name', 'customer name', 'client name'
-  ]);
-
-  const previous = findValue([
-    'previous amount', 'previous bill amount',
-    'previous claim', 'previous cumulative'
-  ]);
-
-  const current = findValue([
-    'current amount', 'current bill amount',
-    'current claim', 'amount of this bill',
-    'this bill amount'
-  ]);
-
-  const cumulative = findValue([
-    'cumulative amount', 'cumulative bill amount',
-    'total cumulative', 'upto date amount',
-    'up to date amount'
-  ]);
-
-  const gst = findValue([
-    'gst amount', 'total gst', 'gst'
-  ]);
-
-  const gross = findValue([
-    'gross bill', 'gross amount', 'gross bill amount',
-    'total gross'
-  ]);
-
-  const net = findValue([
-    'net payable', 'net amount payable',
-    'amount payable', 'net payment'
-  ]);
-
-  result.bill_no = billNo;
-  result.bill_date = excelDate(billDate);
-  result.billing_period = periodFrom;
-  result.agency_name = agency;
-  result.project_name = project;
-
-  result.previous_amount = num(previous);
-  result.current_amount = num(current);
-  result.cumulative_amount = num(cumulative);
-  result.gst_amount = num(gst);
-  result.gross_bill = num(gross);
-  result.net_payable = num(net);
-
-  result.total_amount =
-    result.gross_bill ||
-    result.current_amount ||
-    result.cumulative_amount ||
-    0;
-
-  if (type === 'vendor' && !result.agency_name) {
-    result.agency_name = flat.find(v =>
-      /private limited|pvt\.?\s*ltd|erectors|contractor/i.test(v)
-    ) || '';
-  }
-
-  if (type === 'customer' && !result.project_name) {
-    result.project_name = flat.find(v =>
-      /bhel|site|project/i.test(v)
-    ) || '';
-  }
-
-  return result;
-}
-
-function App() {
-  const [session, setSession] = useState(null);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [signup, setSignup] = useState(false);
-  const [tab, setTab] = useState('dashboard');
-
-  const [rows, setRows] = useState([]);
-  const [bills, setBills] = useState([]);
-  const [customerBills, setCustomerBills] = useState([]);
-  const [vendorPayments, setVendorPayments] = useState([]);
-  const [customerReceipts, setCustomerReceipts] = useState([]);
-  const [docs, setDocs] = useState([]);
-
-  const [form, setForm] = useState(blank);
-  const [filterMonth, setFilterMonth] = useState(new Date().getMonth());
-  const [filterYear, setFilterYear] = useState(new Date().getFullYear());
-  const [filterDept, setFilterDept] = useState('All');
-  const [notice, setNotice] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [mobile, setMobile] = useState(false);
-  const [stats, setStats] = useState(null);
-
-  const [vendorForm, setVendorForm] = useState({
-    agency_name: '',
-    bill_no: '',
-    bill_date: new Date().toISOString().slice(0, 10),
-    billing_period: '',
-    total_amount: 0,
-    net_payable: 0
-  });
-
-  const [customerForm, setCustomerForm] = useState({
-    project_name: 'BHEL PSER LARA SITE',
-    contract_ref: 'CS-9587-001R-2-SC-NOA-7333-AMDT-01',
-    bill_no: '',
-    bill_date: new Date().toISOString().slice(0, 10),
-    billing_period: '',
-    total_amount: 0
-  });
-
-  const [vendorAbstract, setVendorAbstract] = useState({
-    rows: [],
-    sheetName: '',
-    extracted: {}
-  });
-
-  const [customerAbstract, setCustomerAbstract] = useState({
-    rows: [],
-    sheetName: '',
-    extracted: {}
-  });
-
-  const [vendorPaste, setVendorPaste] = useState('');
-  const [customerPaste, setCustomerPaste] = useState('');
-  const [selectedBill, setSelectedBill] = useState(null);
-
-  const [paymentForm, setPaymentForm] = useState({
-    bill_id: '',
-    payment_date: new Date().toISOString().slice(0, 10),
-    amount: '',
-    reference_no: '',
-    remarks: ''
-  });
-
-  const [receiptForm, setReceiptForm] = useState({
-    bill_id: '',
-    receipt_date: new Date().toISOString().slice(0, 10),
-    amount: '',
-    reference_no: '',
-    remarks: ''
-  });
-
-  useEffect(() => {
-    if (!supabase) return;
-
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-    });
-
-    const {
-      data: { subscription }
-    } = supabase.auth.onAuthStateChange((_event, currentSession) => {
-      setSession(currentSession);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!session) return;
-
-    loadAll();
-    supabase.rpc('record_user_activity');
-
-    const timer = setInterval(() => {
-      supabase.rpc('record_user_activity');
-    }, 60000);
-
-    return () => clearInterval(timer);
-  }, [session]);
-
-  async function loadAll() {
-    if (!session || !supabase) return;
-
-    setBusy(true);
-
-    try {
-      const results = await Promise.all([
-        supabase.from('dpr_entries').select('*').order('work_date', { ascending: false }),
-        supabase.from('vendor_bills').select('*').order('created_at', { ascending: false }),
-        supabase.from('customer_bill_abstracts').select('*').order('created_at', { ascending: false }),
-        supabase.from('drawings').select('*').order('created_at', { ascending: false }),
-        supabase.from('vendor_bill_payments').select('*').order('payment_date', { ascending: false }),
-        supabase.from('customer_bill_receipts').select('*').order('receipt_date', { ascending: false })
-      ]);
-
-      const [d, v, c, f, p, r] = results;
-
-      if (d.error) setNotice('DPR Load Error: ' + d.error.message);
-      else setRows(d.data || []);
-
-      if (v.error) setNotice('Vendor Bill Load Error: ' + v.error.message);
-      else setBills(v.data || []);
-
-      if (c.error) setNotice('Customer Bill Load Error: ' + c.error.message);
-      else setCustomerBills(c.data || []);
-
-      if (f.error) setNotice('Drawing Load Error: ' + f.error.message);
-      else setDocs(f.data || []);
-
-      if (p.error) setNotice('Vendor Payment Load Error: ' + p.error.message);
-      else setVendorPayments(p.data || []);
-
-      if (r.error) setNotice('Customer Receipt Load Error: ' + r.error.message);
-      else setCustomerReceipts(r.data || []);
-
-      if (session.user.email?.toLowerCase() === ADMIN_EMAIL) {
-        const s = await supabase.rpc('get_admin_user_stats');
-        if (!s.error) setStats(s.data);
-      }
-    } catch (err) {
-      setNotice('Load Error: ' + err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function login(e) {
-    e.preventDefault();
-
-    if (!supabase) return;
-
-    setBusy(true);
-
-    try {
-      const action = signup
-        ? supabase.auth.signUp({ email, password })
-        : supabase.auth.signInWithPassword({ email, password });
-
-      const { error } = await action;
-
-      setNotice(error
-        ? error.message
-        : signup
-          ? 'Account created. Email confirmation may be required before login.'
-          : 'Login successful'
-      );
-    } catch (err) {
-      setNotice(err.message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function adminToken() {
-    const p = window.prompt('Admin Password डालें:');
-    if (!p) return null;
-
-    const { data, error } = await supabase.rpc(
-      'verify_admin_password',
-      { p_password: p }
-    );
-
-    if (error) {
-      setNotice('Admin Password Error: ' + error.message);
-      return null;
-    }
-
-    if (!data) {
-      setNotice('Admin Password गलत है।');
-      return null;
-    }
-
-    return data;
-  }
-
-  async function setAdminPassword() {
-    const p = window.prompt('नया Admin Password डालें (कम से कम 8 अक्षर):');
-    if (!p) return;
-
-    if (p.length < 8) {
-      setNotice('Password कम से कम 8 अक्षर का होना चाहिए।');
-      return;
-    }
-
-    const confirmPassword = window.prompt('नया Password दोबारा डालें:');
-
-    if (p !== confirmPassword) {
-      setNotice('दोनों Password अलग हैं।');
-      return;
-    }
-
-    const { error } = await supabase.rpc('set_admin_password', {
-      p_password: p
-    });
-
-    setNotice(
-      error
-        ? error.message
-        : 'Admin Password सफलतापूर्वक सेट हो गया।'
-    );
-  }
-
-  async function saveDpr(e) {
-    e.preventDefault();
-
-    if (!form.work_date || !form.pg || !form.ma || !form.du) {
-      setNotice('Date, PG, MA और DU भरना जरूरी है।');
-      return;
-    }
-
-    const token = await adminToken();
-    if (!token) return;
-
-    const payload = {
-      work_date: form.work_date,
-      department: form.department,
-      pg: String(form.pg).trim(),
-      ma: String(form.ma).trim(),
-      du: String(form.du).trim(),
-      description: String(form.description || ''),
-      quantity: num(form.quantity),
-      unit_weight: num(form.unit_weight),
-      weight: weight(form.quantity, form.unit_weight),
-      pre_assembly: num(form.pre_assembly),
-      placement: num(form.placement),
-      alignment: num(form.alignment),
-      bolting: num(form.bolting),
-      remark: String(form.remark || '')
-    };
-
-    const { error } = await supabase.rpc('save_dpr_entry', {
-      p_token: token,
-      p_payload: payload
-    });
-
-    setNotice(error
-      ? error.message
-      : 'DPR saved / updated successfully'
-    );
-
-    if (!error) {
-      setForm({
-        ...blank,
-        work_date: form.work_date,
-        department: form.department
-      });
-      await loadAll();
-    }
-  }
-
-  async function delDpr(id) {
-    if (!window.confirm('इस DPR को Delete करना है?')) return;
-
-    const token = await adminToken();
-    if (!token) return;
-
-    const { error } = await supabase.rpc('delete_dpr_entry', {
-      p_token: token,
-      p_id: id
-    });
-
-    setNotice(error ? error.message : 'DPR deleted');
-
-    if (!error) await loadAll();
-  }
-
-  const monthRows = useMemo(() => rows.filter(r => {
-    const d = new Date(r.work_date + 'T00:00:00');
-    return d.getMonth() === filterMonth &&
-      d.getFullYear() === filterYear;
-  }), [rows, filterMonth, filterYear]);
-
-  const visibleRows = useMemo(() =>
-    filterDept === 'All'
-      ? monthRows
-      : monthRows.filter(r => r.department === filterDept),
-    [monthRows, filterDept]
-  );
-
-  const totals = useMemo(() => rows.reduce((a, r) => ({
-    qty: a.qty + num(r.quantity),
-    weight: a.weight + num(r.weight)
-  }), { qty: 0, weight: 0 }), [rows]);
-
-  const vendorMonthBills = bills.filter(b => {
-    const d = b.bill_date ? new Date(b.bill_date + 'T00:00:00') : null;
-    return d &&
-      d.getMonth() === filterMonth &&
-      d.getFullYear() === filterYear;
-  });
-
-  const customerMonthBills = customerBills.filter(b => {
-    const d = b.bill_date ? new Date(b.bill_date + 'T00:00:00') : null;
-    return d &&
-      d.getMonth() === filterMonth &&
-      d.getFullYear() === filterYear;
-  });
-
-  function paidFor(id) {
-    return vendorPayments
-      .filter(p => p.bill_id === id)
-      .reduce((s, p) => s + num(p.amount), 0);
-  }
-
-  function receivedFor(id) {
-    return customerReceipts
-      .filter(r => r.bill_id === id)
-      .reduce((s, r) => s + num(r.amount), 0);
-  }
-
-  function vendorOutstanding(b) {
-    return num(b.net_payable || b.total_amount) - paidFor(b.id);
-  }
-
-  function customerOutstanding(b) {
-    return num(b.total_amount) - receivedFor(b.id);
-  }
-
-  const vendorTotals = vendorMonthBills.reduce((a, b) => ({
-    billed: a.billed + num(b.net_payable || b.total_amount),
-    paid: a.paid + paidFor(b.id)
-  }), { billed: 0, paid: 0 });
-
-  const customerTotals = customerMonthBills.reduce((a, b) => ({
-    billed: a.billed + num(b.total_amount),
-    received: a.received + receivedFor(b.id)
-  }), { billed: 0, received: 0 });
-
-  function exportRows(data, name) {
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-
-    XLSX.utils.book_append_sheet(wb, ws, 'Records');
-    XLSX.writeFile(wb, name + '.xlsx');
-  }
-
-  function exportDprWorkbook() {
-    const wb = XLSX.utils.book_new();
-
-    const headers = [
-      'Date', 'PG', 'MA', 'DU', 'Description',
-      'Quantity', 'Unit Weight', 'Total Weight',
-      'Pre-Assembly Qty', 'Placement Qty',
-      'Alignment Qty', 'Bolting Qty', 'Remarks'
-    ];
-
-    for (const dept of DEPTS) {
-      const data = rows.filter(r => r.department === dept);
-
-      const aoa = [
-        ['BOILER CONSTRUCTION MANAGEMENT'],
-        [`DAILY PROGRESS REPORT - ${dept}`],
-        ['Generated: ' + new Date().toLocaleDateString('en-IN')],
-        headers
-      ];
-
-      data.forEach(r => aoa.push([
-        r.work_date,
-        r.pg,
-        r.ma,
-        r.du,
-        r.description,
-        num(r.quantity),
-        num(r.unit_weight),
-        num(r.weight),
-        num(r.pre_assembly),
-        num(r.placement),
-        num(r.alignment),
-        num(r.bolting),
-        r.remark || ''
-      ]));
-
-      const ws = XLSX.utils.aoa_to_sheet(aoa);
-
-      ws['!cols'] = [
-        15, 12, 12, 12, 30, 14, 14,
-        16, 17, 15, 15, 14, 28
-      ].map(w => ({ wch: w }));
-
-      ws['!merges'] = [
-        { s: { r: 0, c: 0 }, e: { r: 0, c: 12 } },
-        { s: { r: 1, c: 0 }, e: { r: 1, c: 12 } },
-        { s: { r: 2, c: 0 }, e: { r: 2, c: 12 } }
-      ];
-
-      XLSX.utils.book_append_sheet(wb, ws, dept);
-    }
-
-    XLSX.writeFile(wb, 'Boiler_Construction_DPR.xlsx');
-  }
-
-  async function importDpr(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const token = await adminToken();
-
-    if (!token) {
-      e.target.value = '';
-      return;
-    }
-
-    setBusy(true);
-
-    try {
-      const wb = XLSX.read(await file.arrayBuffer(), {
-        cellDates: true
-      });
-
-      const mapped = [];
-      let skipped = 0;
-
-      for (const sheetName of wb.SheetNames) {
-        const matrix = XLSX.utils.sheet_to_json(
-          wb.Sheets[sheetName],
-          { header: 1, defval: '', raw: true }
-        );
-
-        let hi = -1;
-        let headers = [];
-
-        for (let i = 0; i < Math.min(matrix.length, 25); i++) {
-          const h = matrix[i].map(norm);
-
-          if (
-            h.includes('pg') &&
-            h.includes('ma') &&
-            h.includes('du') &&
-            h.some(x => ['date', 'workdate'].includes(x))
-          ) {
-            hi = i;
-            headers = h;
-            break;
-          }
-        }
-
-        if (hi < 0) continue;
-
-        const sheetDept = deptName(sheetName);
-
-        const get = (r, aliases) => {
-          const i = headers.findIndex(h => aliases.includes(h));
-          return i < 0 ? '' : r[i];
-        };
-
-        for (const r of matrix.slice(hi + 1)) {
-          if (!r.some(v => String(v ?? '').trim())) continue;
-
-          const date = excelDate(get(r, ['date', 'workdate']));
-          const department =
-            sheetDept || deptName(get(r, ['department', 'dept']));
-
-          const pg = get(r, ['pg']);
-          const ma = get(r, ['ma']);
-          const du = get(r, ['du']);
-
-          if (!date || !DEPTS.includes(department) || !pg || !ma || !du) {
-            skipped++;
-            continue;
-          }
-
-          const quantity = num(get(r, ['quantity', 'qty']));
-          const unit_weight = num(get(r, ['unitweight']));
-
-          mapped.push({
-            work_date: date,
-            department,
-            pg: String(pg).trim(),
-            ma: String(ma).trim(),
-            du: String(du).trim(),
-            description: String(
-              get(r, ['description', 'itemdescription']) || ''
-            ),
-            quantity,
-            unit_weight,
-            weight: quantity * unit_weight,
-            pre_assembly: num(get(r, ['preassemblyqty', 'preassembly'])),
-            placement: num(get(r, ['placementqty', 'placement'])),
-            alignment: num(get(r, ['alignmentqty', 'alignment'])),
-            bolting: num(get(r, ['boltingqty', 'bolting'])),
-            remark: String(
-              get(r, ['remarks', 'remark', 'status']) || ''
-            )
-          });
-        }
-      }
-
-      if (!mapped.length) {
-        throw new Error(
-          'Excel में सही Date, PG, MA, DU और Department headers नहीं मिले।'
-        );
-      }
-
-      const { data, error } = await supabase.rpc('import_dpr_entries', {
-        p_token: token,
-        p_rows: mapped
-      });
-
-      if (error) throw error;
-
-      setNotice(`${data} DPR rows imported/updated. Skipped: ${skipped}`);
-      await loadAll();
-    } catch (err) {
-      setNotice('Excel Import Error: ' + err.message);
-    } finally {
-      setBusy(false);
-      e.target.value = '';
-    }
-  }
-
-  function applyExtractedBill(type, extracted, data) {
-    if (type === 'vendor') {
-      setVendorAbstract({
-        ...data,
-        extracted
-      });
-
-      setVendorForm(old => ({
-        ...old,
-        agency_name: extracted.agency_name || old.agency_name,
-        bill_no: extracted.bill_no || old.bill_no,
-        bill_date: extracted.bill_date || old.bill_date,
-        billing_period: extracted.billing_period || old.billing_period,
-        total_amount: extracted.gross_bill ||
-          extracted.current_amount ||
-          extracted.total_amount ||
-          old.total_amount,
-        net_payable: extracted.net_payable || old.net_payable
-      }));
-    } else {
-      setCustomerAbstract({
-        ...data,
-        extracted
-      });
-
-      setCustomerForm(old => ({
-        ...old,
-        project_name: extracted.project_name || old.project_name,
-        bill_no: extracted.bill_no || old.bill_no,
-        bill_date: extracted.bill_date || old.bill_date,
-        billing_period: extracted.billing_period || old.billing_period,
-        total_amount: extracted.current_amount ||
-          extracted.gross_bill ||
-          extracted.total_amount ||
-          old.total_amount
-      }));
-    }
-  }
-
-  function readBillFile(e, type) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-
-    reader.onload = event => {
-      try {
-        const wb = XLSX.read(event.target.result, {
-          type: 'array',
-          cellDates: true
-        });
-
-        const sheetName = wb.SheetNames[0];
-        const ws = wb.Sheets[sheetName];
-
-        const matrix = XLSX.utils.sheet_to_json(ws, {
-          header: 1,
-          defval: '',
-          raw: false
-        });
-
-        const data = {
-          rows: matrix,
-          sheetName,
-          merges: ws['!merges'] || [],
-          cols: (ws['!cols'] || []).map(c => ({
-            wch: c.wch || 12
-          }))
-        };
-
-        const extracted = extractBillDetails(matrix, type);
-
-        applyExtractedBill(type, extracted, data);
-
-        setNotice(
-          `${file.name} पढ़ ली गई। उपलब्ध Bill Details अपने-आप भरी गई हैं। Save करने से पहले जाँच लें।`
-        );
-      } catch (err) {
-        setNotice('Excel पढ़ने में Error: ' + err.message);
-      }
-
-      e.target.value = '';
-    };
-
-    reader.readAsArrayBuffer(file);
-  }
-
-  function handleBillPaste(value, type) {
-    if (type === 'vendor') setVendorPaste(value);
-    else setCustomerPaste(value);
-
-    if (!value.trim()) return;
-
-    const matrix = parseBillText(value);
-    const extracted = extractBillDetails(matrix, type);
-
-    const data = {
-      rows: matrix,
-      sheetName: 'Pasted Abstract'
-    };
-
-    applyExtractedBill(type, extracted, data);
-  }
-
-  async function saveVendorBill(e) {
-    e.preventDefault();
-
-    let data = vendorAbstract;
-
-    if (vendorPaste.trim()) {
-      const matrix = parseBillText(vendorPaste);
-      data = {
-        rows: matrix,
-        sheetName: 'Pasted Abstract',
-        extracted: extractBillDetails(matrix, 'vendor')
-      };
-    }
-
-    if (!data.rows?.length) {
-      setNotice('पहले Vendor Abstract की Excel Import या Copy-Paste करें।');
-      return;
-    }
-
-    const token = await adminToken();
-    if (!token) return;
-
-    setBusy(true);
-
-    const payload = {
-      ...vendorForm,
-      total_amount: num(vendorForm.total_amount),
-      net_payable: num(vendorForm.net_payable),
-      abstract_data: data
-    };
-
-    const { error } = await supabase.rpc('save_vendor_bill', {
-      p_token: token,
-      p_payload: payload
-    });
-
-    setBusy(false);
-
-    if (error) {
-      setNotice('Vendor Bill Error: ' + error.message);
-    } else {
-      setNotice('Vendor Bill सफलतापूर्वक सेव / अपडेट हो गया।');
-
-      setVendorForm({
-        agency_name: '',
-        bill_no: '',
-        bill_date: new Date().toISOString().slice(0, 10),
-        billing_period: '',
-        total_amount: 0,
-        net_payable: 0
-      });
-
-      setVendorAbstract({
-        rows: [],
-        sheetName: '',
-        extracted: {}
-      });
-
-      setVendorPaste('');
-      await loadAll();
-    }
-  }
-
-  async function saveCustomerBill(e) {
-    e.preventDefault();
-
-    let data = customerAbstract;
-
-    if (customerPaste.trim()) {
-      const matrix = parseBillText(customerPaste);
-      data = {
-        rows: matrix,
-        sheetName: 'Pasted Abstract',
-        extracted: extractBillDetails(matrix, 'customer')
-      };
-    }
-
-    if (!data.rows?.length) {
-      setNotice('पहले Customer Abstract की Excel Import या Copy-Paste करें।');
-      return;
-    }
-
-    const token = await adminToken();
-    if (!token) return;
-
-    setBusy(true);
-
-    const payload = {
-      ...customerForm,
-      total_amount: num(customerForm.total_amount),
-      abstract_data: data
-    };
-
-    const { error } = await supabase.rpc('save_customer_bill', {
-      p_token: token,
-      p_payload: payload
-    });
-
-    setBusy(false);
-
-    if (error) {
-      setNotice('Customer Bill Error: ' + error.message);
-    } else {
-      setNotice('Customer Bill सफलतापूर्वक सेव / अपडेट हो गया।');
-
-      setCustomerForm({
-        project_name: 'BHEL PSER LARA SITE',
-        contract_ref: 'CS-9587-001R-2-SC-NOA-7333-AMDT-01',
-        bill_no: '',
-        bill_date: new Date().toISOString().slice(0, 10),
-        billing_period: '',
-        total_amount: 0
-      });
-
-      setCustomerAbstract({
-        rows: [],
-        sheetName: '',
-        extracted: {}
-      });
-
-      setCustomerPaste('');
-      await loadAll();
-    }
-  }
-
-  async function addVendorPayment(e) {
-    e.preventDefault();
-
-    if (!paymentForm.bill_id || num(paymentForm.amount) <= 0) {
-      setNotice('Vendor Bill और Payment Amount चुनना जरूरी है।');
-      return;
-    }
-
-    const token = await adminToken();
-    if (!token) return;
-
-    const { error } = await supabase.rpc('add_vendor_payment', {
-      p_token: token,
-      p_payload: {
-        ...paymentForm,
-        amount: num(paymentForm.amount)
-      }
-    });
-
-    if (error) {
-      setNotice('Payment Error: ' + error.message);
-    } else {
-      setNotice('Vendor Payment दर्ज हो गया।');
-
-      setPaymentForm({
-        ...paymentForm,
-        amount: '',
-        reference_no: '',
-        remarks: ''
-      });
-
-      await loadAll();
-    }
-  }
-
-  async function addCustomerReceipt(e) {
-    e.preventDefault();
-
-    if (!receiptForm.bill_id || num(receiptForm.amount) <= 0) {
-      setNotice('Customer Bill और Receipt Amount चुनना जरूरी है।');
-      return;
-    }
-
-    const token = await adminToken();
-    if (!token) return;
-
-    const { error } = await supabase.rpc('add_customer_receipt', {
-      p_token: token,
-      p_payload: {
-        ...receiptForm,
-        amount: num(receiptForm.amount)
-      }
-    });
-
-    if (error) {
-      setNotice('Receipt Error: ' + error.message);
-    } else {
-      setNotice('Customer Receipt दर्ज हो गया।');
-
-      setReceiptForm({
-        ...receiptForm,
-        amount: '',
-        reference_no: '',
-        remarks: ''
-      });
-
-      await loadAll();
-    }
-  }
-
-  async function uploadDrawing(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setBusy(true);
-
-    const path = `${session.user.id}/${Date.now()}-${file.name}`;
-
-    const up = await supabase.storage
-      .from('drawings')
-      .upload(path, file);
-
-    if (up.error) {
-      setNotice(up.error.message);
-      setBusy(false);
-      e.target.value = '';
-      return;
-    }
-
-    const { error } = await supabase.rpc('create_drawing_record', {
-      p_payload: {
-        file_name: file.name,
-        storage_path: path,
-        department: form.department || 'General'
-      }
-    });
-
-    setNotice(
-      error
-        ? 'Drawing record error: ' + error.message
-        : 'Drawing uploaded successfully'
-    );
-
-    if (error) {
-      await supabase.storage.from('drawings').remove([path]);
-    } else {
-      await loadAll();
-    }
-
-    setBusy(false);
-    e.target.value = '';
-  }
-
-  function printAbstract() {
-    window.print();
-  }
-
-  if (!supabase) return <Setup />;
-
-  if (!session) {
-    return (
-      <div className="login-wrap">
-        <form className="login-card" onSubmit={login}>
-          <div className="logo">
-            <Factory size={34} />
-          </div>
-
-          <h1>Boiler Management</h1>
-          <p>Construction Management System</p>
-
-          <label>Email</label>
-          <input
-            type="email"
-            value={email}
-            onChange={e => setEmail(e.target.value)}
-            required
-            placeholder="Email"
-          />
-
-          <label>Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            required
-            placeholder="Password"
-          />
-
-          <button className="primary full" disabled={busy}>
-            <LockKeyhole size={17} />
-            {signup ? 'Create Account' : 'Secure Login'}
-          </button>
-
-          <button
-            type="button"
-            className="link"
-            onClick={() => setSignup(!signup)}
-          >
-            {signup
-              ? 'पहले से Account है? Login करें'
-              : 'नया User ID बनाएँ / Sign Up'}
-          </button>
-
-          {notice && <small>{notice}</small>}
-        </form>
-      </div>
-    );
-  }
-
-  const nav = [
-    ['dashboard', 'Dashboard', LayoutDashboard],
-    ['dpr', 'DPR Register', ClipboardList],
-    ['ra', 'Vendor Bills', Receipt],
-    ['customer', 'Customer Bills', FileText],
-    ['drawings', 'Drawing Folder', FolderOpen]
+import './style.css';
+
+const supabase=createClient(
+ import.meta.env.VITE_SUPABASE_URL||'',
+ import.meta.env.VITE_SUPABASE_ANON_KEY||import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY||''
+);
+const COMPANY='P.E. ERECTORS PVT. LTD.';
+const DEPTS=['Structure','Pressure Part','Non Pressure Part','Rotary Part','Bunker','LP Piping','Trim Piping'];
+const money=n=>'₹ '+(Number(n)||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+const today=()=>new Date().toISOString().slice(0,10);
+const blankDpr={work_date:today(),department:'Structure',pg:'',ma:'',du:'',description:'',quantity:0,weight:0,pre_assembly:0,placement:0,alignment:0,bolting:0,remark:''};
+const blankBill={agency_name:'',bill_no:'',bill_date:today(),period_from:'',period_to:'',previous_amount:0,current_amount:0,cumulative_amount:0,gst_amount:0,gross_bill:0,deductions:0,net_payable:0,abstract_json:[]};
+
+function App(){
+ const [session,setSession]=useState(null);
+ const [email,setEmail]=useState('');
+ const [password,setPassword]=useState('');
+ const [tab,setTab]=useState('dashboard');
+ const [mobile,setMobile]=useState(false);
+ const [busy,setBusy]=useState(false);
+ const [notice,setNotice]=useState('');
+ const [dpr,setDpr]=useState([]);
+ const [vendor,setVendor]=useState([]);
+ const [customer,setCustomer]=useState([]);
+ const [drawings,setDrawings]=useState([]);
+ const [dform,setDform]=useState(blankDpr);
+ const [vform,setVform]=useState(blankBill);
+ const [cform,setCform]=useState({...blankBill,agency_name:'BHEL PSER LARA SITE'});
+ const [view,setView]=useState(null);
+ const [uploadDept,setUploadDept]=useState('Structure');
+
+ useEffect(()=>{
+  supabase.auth.getSession().then(({data})=>setSession(data.session));
+  const {data:{subscription}}=supabase.auth.onAuthStateChange((_e,s)=>setSession(s));
+  return()=>subscription.unsubscribe();
+ },[]);
+
+ useEffect(()=>{if(session)loadAll()},[session]);
+
+ async function loadAll(){
+  setBusy(true);
+  const specs=[
+   ['dpr_entries',setDpr,'work_date'],
+   ['vendor_bills',setVendor,'created_at'],
+   ['customer_bill_abstracts',setCustomer,'created_at'],
+   ['drawings',setDrawings,'created_at']
   ];
-
-  return (
-    <div className="app">
-      <aside className={mobile ? 'open' : ''}>
-        <div className="brand">
-          <Factory />
-          <span>
-            BOILER
-            <br />
-            <b>MANAGEMENT</b>
-          </span>
-
-          <button
-            className="mobile-close"
-            onClick={() => setMobile(false)}
-          >
-            <X />
-          </button>
-        </div>
-
-        <div className="nav-label">WORKSPACE</div>
-
-        {nav.map(([id, label, Icon]) => (
-          <button
-            key={id}
-            className={'nav ' + (tab === id ? 'active' : '')}
-            onClick={() => {
-              setTab(id);
-              setMobile(false);
-            }}
-          >
-            <Icon size={18} />
-            {label}
-          </button>
-        ))}
-
-        <div className="side-bottom">
-          <span>{session.user.email}</span>
-
-          <button
-            className="nav"
-            onClick={() => supabase.auth.signOut()}
-          >
-            <LogOut size={18} />
-            Logout
-          </button>
-        </div>
-      </aside>
-
-      <main>
-        <header>
-          <button
-            className="menu"
-            onClick={() => setMobile(!mobile)}
-          >
-            <Menu />
-          </button>
-
-          <div>
-            <b>{nav.find(n => n[0] === tab)?.[1] || 'Dashboard'}</b>
-            <small>Boiler Construction Project Workspace</small>
-          </div>
-
-          <button
-            className="icon-btn"
-            onClick={loadAll}
-            disabled={busy}
-          >
-            <RefreshCw size={18} />
-          </button>
-        </header>
-
-        <div className="content">
-          {notice && (
-            <div
-              className="notice"
-              onClick={() => setNotice('')}
-            >
-              {notice}　×
-            </div>
-          )}
-
-          {session.user.email?.toLowerCase() === ADMIN_EMAIL && (
-            <div className="panel">
-              <button
-                className="secondary"
-                onClick={setAdminPassword}
-              >
-                <LockKeyhole size={16} />
-                Set / Change Admin Password
-              </button>
-
-              {stats && (
-                <p>
-                  <Users size={16} />
-                  Registered Users: <b>{stats.total_users}</b>
-                  {' '} | Active Users (last 5 min):{' '}
-                  <b>{stats.active_users}</b>
-                </p>
-              )}
-            </div>
-          )}
-
-          {tab === 'dashboard' && (
-            <>
-              <div className="welcome">
-                <div>
-                  <span className="eyebrow">PROJECT OVERVIEW</span>
-                  <h1>Master Dashboard</h1>
-                  <p>All construction records in one place.</p>
-                </div>
-
-                <button
-                  onClick={() => setTab('dpr')}
-                  className="primary"
-                >
-                  <Plus size={17} />
-                  Add DPR
-                </button>
-              </div>
-
-              <div className="panel">
-                <div className="filters">
-                  <label>
-                    Month
-                    <select
-                      value={filterMonth}
-                      onChange={e => setFilterMonth(+e.target.value)}
-                    >
-                      {MONTHS.map((m, i) => (
-                        <option key={m} value={i}>{m}</option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label>
-                    Year
-                    <input
-                      type="number"
-                      value={filterYear}
-                      onChange={e => setFilterYear(+e.target.value)}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div className="stats">
-                <Stat title="DPR Entries" value={rows.length} />
-                <Stat title="Total Quantity" value={totals.qty.toLocaleString()} />
-                <Stat title="Total Weight" value={totals.weight.toLocaleString()} />
-                <Stat title="Vendor Bills" value={bills.length} />
-                <Stat title="Customer Bills" value={customerBills.length} />
-                <Stat title="Drawings" value={docs.length} />
-              </div>
-
-              <div className="stats">
-                <Stat title="Vendor Billed" value={money(vendorTotals.billed)} />
-                <Stat title="Vendor Paid" value={money(vendorTotals.paid)} />
-                <Stat title="Vendor Outstanding" value={money(vendorTotals.billed - vendorTotals.paid)} />
-                <Stat title="Customer Billed" value={money(customerTotals.billed)} />
-                <Stat title="Customer Received" value={money(customerTotals.received)} />
-                <Stat title="Customer Outstanding" value={money(customerTotals.billed - customerTotals.received)} />
-              </div>
-
-              <div className="panel">
-                <h2>{MONTHS[filterMonth]} {filterYear} - Monthly Abstract Summary</h2>
-                <p>Vendor Bills: {vendorMonthBills.length} | Customer Bills: {customerMonthBills.length}</p>
-                <p>Vendor Outstanding: <b>{money(vendorTotals.billed - vendorTotals.paid)}</b></p>
-                <p>Customer Outstanding: <b>{money(customerTotals.billed - customerTotals.received)}</b></p>
-              </div>
-
-              <div className="panel">
-                <div className="panel-head">
-                  <h2>Department Progress</h2>
-                  <span>All-time quantity & weight</span>
-                </div>
-
-                <div className="dept-grid">
-                  {DEPTS.map(d => {
-                    const a = rows.filter(r => r.department === d);
-
-                    return (
-                      <div className="dept" key={d}>
-                        <b>{d}</b>
-                        <strong>
-                          {a.reduce((s, r) => s + num(r.quantity), 0).toLocaleString()}
-                        </strong>
-                        <small>
-                          {a.length} entries ·{' '}
-                          {a.reduce((s, r) => s + num(r.weight), 0).toLocaleString()} weight
-                        </small>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="panel">
-                <h2>Recent DPR Entries</h2>
-                <DprTable rows={rows.slice(0, 8)} onDelete={delDpr} />
-              </div>
-            </>
-          )}
-
-          {tab === 'dpr' && (
-            <>
-              <div className="welcome">
-                <div>
-                  <span className="eyebrow">DAILY PROGRESS REPORT</span>
-                  <h1>DPR Register</h1>
-                </div>
-
-                <div className="actions">
-                  <label className="secondary upload">
-                    <Upload size={16} />
-                    Import Excel
-                    <input
-                      type="file"
-                      accept=".xlsx,.xls,.csv"
-                      onChange={importDpr}
-                    />
-                  </label>
-
-                  <button
-                    className="secondary"
-                    onClick={exportDprWorkbook}
-                  >
-                    <Download size={16} />
-                    Export Excel
-                  </button>
-                </div>
-              </div>
-
-              <div className="panel">
-                <h2>Add Daily Progress</h2>
-
-                <form className="entry-grid" onSubmit={saveDpr}>
-                  <Field label="Date">
-                    <input
-                      type="date"
-                      value={form.work_date}
-                      onChange={e => setForm({ ...form, work_date: e.target.value })}
-                      required
-                    />
-                  </Field>
-
-                  <Field label="Department">
-                    <select
-                      value={form.department}
-                      onChange={e => setForm({ ...form, department: e.target.value })}
-                    >
-                      {DEPTS.map(d => <option key={d}>{d}</option>)}
-                    </select>
-                  </Field>
-
-                  {[
-                    'pg', 'ma', 'du', 'description',
-                    'quantity', 'unit_weight', 'pre_assembly',
-                    'placement', 'alignment', 'bolting', 'remark'
-                  ].map(k => (
-                    <Field
-                      label={k.replaceAll('_', ' ').toUpperCase()}
-                      key={k}
-                    >
-                      <input
-                        type={[
-                          'quantity', 'unit_weight', 'pre_assembly',
-                          'placement', 'alignment', 'bolting'
-                        ].includes(k) ? 'number' : 'text'}
-                        step="any"
-                        value={form[k]}
-                        onChange={e => setForm({
-                          ...form,
-                          [k]: e.target.value
-                        })}
-                      />
-                    </Field>
-                  ))}
-
-                  <Field label="TOTAL WEIGHT (AUTO)">
-                    <input
-                      value={weight(form.quantity, form.unit_weight)}
-                      readOnly
-                    />
-                  </Field>
-
-                  <div className="form-end">
-                    <button className="primary" disabled={busy}>
-                      <Plus size={16} />
-                      Save / Update DPR
-                    </button>
-                  </div>
-                </form>
-              </div>
-
-              <div className="panel">
-                <div className="panel-head">
-                  <h2>DPR Register</h2>
-
-                  <div className="filters">
-                    <select
-                      value={filterDept}
-                      onChange={e => setFilterDept(e.target.value)}
-                    >
-                      <option>All</option>
-                      {DEPTS.map(d => <option key={d}>{d}</option>)}
-                    </select>
-
-                    <select
-                      value={filterMonth}
-                      onChange={e => setFilterMonth(+e.target.value)}
-                    >
-                      {MONTHS.map((m, i) => (
-                        <option key={m} value={i}>{m}</option>
-                      ))}
-                    </select>
-
-                    <input
-                      type="number"
-                      value={filterYear}
-                      onChange={e => setFilterYear(+e.target.value)}
-                    />
-                  </div>
-                </div>
-
-                <div className="month-summary">
-                  <b>{MONTHS[filterMonth]} {filterYear}</b>
-                  <span>{visibleRows.length} entries</span>
-                  <span>
-                    Qty: {visibleRows.reduce((s, r) => s + num(r.quantity), 0)}
-                  </span>
-                  <span>
-                    Weight: {visibleRows.reduce((s, r) => s + num(r.weight), 0)}
-                  </span>
-                </div>
-
-                <DprTable rows={visibleRows} onDelete={delDpr} />
-              </div>
-            </>
-          )}
-
-          {tab === 'ra' && (
-            <>
-              <div className="welcome">
-                <div>
-                  <span className="eyebrow">VENDOR BILLING</span>
-                  <h1>Vendor Bill Management</h1>
-                  <p>Import your original Vendor RA Abstract Excel or paste its rows.</p>
-                </div>
-
-                <button
-                  className="secondary"
-                  onClick={() => exportRows(bills.map(b => ({
-                    agency_name: b.agency_name,
-                    bill_no: b.bill_no,
-                    bill_date: b.bill_date,
-                    billing_period: b.billing_period,
-                    total_amount: b.total_amount,
-                    net_payable: b.net_payable
-                  })), 'Vendor_Bills')}
-                >
-                  <Download size={16} />
-                  Export Register
-                </button>
-              </div>
-
-              <div className="stats">
-                <Stat title="Total Bills" value={vendorMonthBills.length} />
-                <Stat title="Total Billed" value={money(vendorTotals.billed)} />
-                <Stat title="Paid" value={money(vendorTotals.paid)} />
-                <Stat title="Outstanding" value={money(vendorTotals.billed - vendorTotals.paid)} />
-              </div>
-
-              <div className="panel">
-                <h2>Import Vendor Abstract</h2>
-                <p>
-                  अपनी मौजूदा Vendor RA Bill Excel फाइल चुनें।
-                  Excel से पूरा Abstract Copy करके भी Paste कर सकते हैं।
-                </p>
-
-                <label className="secondary upload">
-                  <Upload size={16} />
-                  Import Vendor Excel
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls"
-                    onChange={e => readBillFile(e, 'vendor')}
-                  />
-                </label>
-
-                {vendorAbstract.rows.length > 0 && (
-                  <p className="success-text">
-                    Excel तैयार: {vendorAbstract.sheetName} · {vendorAbstract.rows.length} rows
-                  </p>
-                )}
-
-                <Field label="या Excel से पूरा Abstract Copy करके यहाँ Paste करें">
-                  <textarea
-                    rows="5"
-                    value={vendorPaste}
-                    onChange={e => handleBillPaste(e.target.value, 'vendor')}
-                    placeholder="Excel की पूरी टेबल Copy करके यहाँ Paste करें..."
-                  />
-                </Field>
-
-                {vendorAbstract.extracted && Object.keys(vendorAbstract.extracted).length > 0 && (
-                  <div className="panel">
-                    <h3>पहचानी गई Vendor Bill Details</h3>
-                    <p>Previous Amount: {money(vendorAbstract.extracted.previous_amount)}</p>
-                    <p>Current Amount: {money(vendorAbstract.extracted.current_amount)}</p>
-                    <p>Cumulative Amount: {money(vendorAbstract.extracted.cumulative_amount)}</p>
-                    <p>GST: {money(vendorAbstract.extracted.gst_amount)}</p>
-                    <p>Gross Bill: {money(vendorAbstract.extracted.gross_bill)}</p>
-                    <p>NET Payable: {money(vendorAbstract.extracted.net_payable)}</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="panel">
-                <h2>Vendor Bill Details</h2>
-
-                <form className="entry-grid" onSubmit={saveVendorBill}>
-                  <Field label="Agency Name">
-                    <input
-                      required
-                      value={vendorForm.agency_name}
-                      onChange={e => setVendorForm({
-                        ...vendorForm,
-                        agency_name: e.target.value
-                      })}
-                      placeholder="P E ERECTORS PRIVATE LIMITED"
-                    />
-                  </Field>
-
-                  <Field label="Bill Number">
-                    <input
-                      required
-                      value={vendorForm.bill_no}
-                      onChange={e => setVendorForm({
-                        ...vendorForm,
-                        bill_no: e.target.value
-                      })}
-                      placeholder="RA-17"
-                    />
-                  </Field>
-
-                  <Field label="Bill Date">
-                    <input
-                      type="date"
-                      value={vendorForm.bill_date}
-                      onChange={e => setVendorForm({
-                        ...vendorForm,
-                        bill_date: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Billing Period">
-                    <input
-                      value={vendorForm.billing_period}
-                      onChange={e => setVendorForm({
-                        ...vendorForm,
-                        billing_period: e.target.value
-                      })}
-                      placeholder="26.09.2026 to 25.10.2026"
-                    />
-                  </Field>
-
-                  <Field label="Grand Total Amount">
-                    <input
-                      type="number"
-                      step="any"
-                      value={vendorForm.total_amount}
-                      onChange={e => setVendorForm({
-                        ...vendorForm,
-                        total_amount: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Net Payable Amount">
-                    <input
-                      type="number"
-                      step="any"
-                      value={vendorForm.net_payable}
-                      onChange={e => setVendorForm({
-                        ...vendorForm,
-                        net_payable: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <div className="form-end">
-                    <button className="primary" disabled={busy}>
-                      <Plus size={16} />
-                      Save / Update Vendor Bill
-                    </button>
-                  </div>
-                </form>
-              </div>
-
-              <div className="panel">
-                <h2>Vendor Bill Register</h2>
-                <BillTable
-                  bills={bills}
-                  type="vendor"
-                  paidFor={paidFor}
-                  outstanding={vendorOutstanding}
-                  onView={setSelectedBill}
-                />
-              </div>
-
-              <div className="panel">
-                <h2>Vendor Payment Entry</h2>
-
-                <form className="entry-grid" onSubmit={addVendorPayment}>
-                  <Field label="Select Vendor Bill">
-                    <select
-                      required
-                      value={paymentForm.bill_id}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        bill_id: e.target.value
-                      })}
-                    >
-                      <option value="">Select Bill</option>
-                      {bills.map(b => (
-                        <option key={b.id} value={b.id}>
-                          {b.agency_name} - {b.bill_no}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-
-                  <Field label="Payment Date">
-                    <input
-                      type="date"
-                      required
-                      value={paymentForm.payment_date}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        payment_date: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Payment Amount">
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="any"
-                      required
-                      value={paymentForm.amount}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        amount: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="UTR / Reference No.">
-                    <input
-                      value={paymentForm.reference_no}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        reference_no: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Remarks">
-                    <input
-                      value={paymentForm.remarks}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        remarks: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <div className="form-end">
-                    <button className="primary">
-                      <IndianRupee size={16} />
-                      Save Payment
-                    </button>
-                  </div>
-                </form>
-
-                <DataTable
-                  rows={vendorPayments}
-                  columns={[
-                    'payment_date', 'bill_id', 'amount',
-                    'reference_no', 'remarks'
-                  ]}
-                />
-              </div>
-            </>
-          )}
-
-          {tab === 'customer' && (
-            <>
-              <div className="welcome">
-                <div>
-                  <span className="eyebrow">CUSTOMER BILLING</span>
-                  <h1>Customer Bill Management</h1>
-                  <p>Import BHEL Customer RA Abstract Excel or paste its rows.</p>
-                </div>
-
-                <button
-                  className="secondary"
-                  onClick={() => exportRows(customerBills.map(b => ({
-                    project_name: b.project_name,
-                    contract_ref: b.contract_ref,
-                    bill_no: b.bill_no,
-                    bill_date: b.bill_date,
-                    billing_period: b.billing_period,
-                    total_amount: b.total_amount
-                  })), 'Customer_Bills')}
-                >
-                  <Download size={16} />
-                  Export Register
-                </button>
-              </div>
-
-              <div className="stats">
-                <Stat title="Total Bills" value={customerMonthBills.length} />
-                <Stat title="Total Billed" value={money(customerTotals.billed)} />
-                <Stat title="Received" value={money(customerTotals.received)} />
-                <Stat title="Outstanding" value={money(customerTotals.billed - customerTotals.received)} />
-              </div>
-
-              <div className="panel">
-                <h2>Import Customer Abstract</h2>
-                <p>अपनी मौजूदा BHEL Customer RA Bill Excel फाइल चुनें।</p>
-
-                <label className="secondary upload">
-                  <Upload size={16} />
-                  Import Customer Excel
-                  <input
-                    type="file"
-                    accept=".xlsx,.xls"
-                    onChange={e => readBillFile(e, 'customer')}
-                  />
-                </label>
-
-                {customerAbstract.rows.length > 0 && (
-                  <p className="success-text">
-                    Excel तैयार: {customerAbstract.sheetName} · {customerAbstract.rows.length} rows
-                  </p>
-                )}
-
-                <Field label="या Excel से पूरा Abstract Copy करके यहाँ Paste करें">
-                  <textarea
-                    rows="5"
-                    value={customerPaste}
-                    onChange={e => handleBillPaste(e.target.value, 'customer')}
-                    placeholder="Excel की पूरी टेबल Copy करके यहाँ Paste करें..."
-                  />
-                </Field>
-
-                {customerAbstract.extracted && Object.keys(customerAbstract.extracted).length > 0 && (
-                  <div className="panel">
-                    <h3>पहचानी गई Customer Bill Details</h3>
-                    <p>Previous Amount: {money(customerAbstract.extracted.previous_amount)}</p>
-                    <p>Current Amount: {money(customerAbstract.extracted.current_amount)}</p>
-                    <p>Cumulative Amount: {money(customerAbstract.extracted.cumulative_amount)}</p>
-                    <p>GST: {money(customerAbstract.extracted.gst_amount)}</p>
-                    <p>Gross Bill: {money(customerAbstract.extracted.gross_bill)}</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="panel">
-                <h2>Customer Bill Details</h2>
-
-                <form className="entry-grid" onSubmit={saveCustomerBill}>
-                  <Field label="Project Name">
-                    <input
-                      value={customerForm.project_name}
-                      onChange={e => setCustomerForm({
-                        ...customerForm,
-                        project_name: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Contract Reference">
-                    <input
-                      required
-                      value={customerForm.contract_ref}
-                      onChange={e => setCustomerForm({
-                        ...customerForm,
-                        contract_ref: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Bill Number">
-                    <input
-                      required
-                      value={customerForm.bill_no}
-                      onChange={e => setCustomerForm({
-                        ...customerForm,
-                        bill_no: e.target.value
-                      })}
-                      placeholder="RA-16"
-                    />
-                  </Field>
-
-                  <Field label="Bill Date">
-                    <input
-                      type="date"
-                      value={customerForm.bill_date}
-                      onChange={e => setCustomerForm({
-                        ...customerForm,
-                        bill_date: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Billing Period">
-                    <input
-                      value={customerForm.billing_period}
-                      onChange={e => setCustomerForm({
-                        ...customerForm,
-                        billing_period: e.target.value
-                      })}
-                      placeholder="01/09/2026 To 30/09/2026"
-                    />
-                  </Field>
-
-                  <Field label="Total Amount Claimed">
-                    <input
-                      type="number"
-                      step="any"
-                      value={customerForm.total_amount}
-                      onChange={e => setCustomerForm({
-                        ...customerForm,
-                        total_amount: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <div className="form-end">
-                    <button className="primary" disabled={busy}>
-                      <Plus size={16} />
-                      Save / Update Customer Bill
-                    </button>
-                  </div>
-                </form>
-              </div>
-
-              <div className="panel">
-                <h2>Customer Bill Register</h2>
-                <BillTable
-                  bills={customerBills}
-                  type="customer"
-                  paidFor={receivedFor}
-                  outstanding={customerOutstanding}
-                  onView={setSelectedBill}
-                />
-              </div>
-
-              <div className="panel">
-                <h2>Customer Receipt Entry</h2>
-
-                <form className="entry-grid" onSubmit={addCustomerReceipt}>
-                  <Field label="Select Customer Bill">
-                    <select
-                      required
-                      value={receiptForm.bill_id}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        bill_id: e.target.value
-                      })}
-                    >
-                      <option value="">Select Bill</option>
-                      {customerBills.map(b => (
-                        <option key={b.id} value={b.id}>
-                          {b.bill_no} - {b.billing_period}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-
-                  <Field label="Receipt Date">
-                    <input
-                      type="date"
-                      required
-                      value={receiptForm.receipt_date}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        receipt_date: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Received Amount">
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="any"
-                      required
-                      value={receiptForm.amount}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        amount: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Bank / Reference No.">
-                    <input
-                      value={receiptForm.reference_no}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        reference_no: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Remarks">
-                    <input
-                      value={receiptForm.remarks}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        remarks: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <div className="form-end">
-                    <button className="primary">
-                      <IndianRupee size={16} />
-                      Save Receipt
-                    </button>
-                  </div>
-                </form>
-
-                <DataTable
-                  rows={customerReceipts}
-                  columns={[
-                    'receipt_date', 'bill_id', 'amount',
-                    'reference_no', 'remarks'
-                  ]}
-                />
-              </div>
-            </>
-          )}
-
-          {tab === 'drawings' && (
-            <>
-              <div className="welcome">
-                <div>
-                  <span className="eyebrow">DOCUMENT LIBRARY</span>
-                  <h1>Drawing Folder</h1>
-                  <p>Store and organize drawings by department.</p>
-                </div>
-
-                <label className="primary upload">
-                  <Upload size={16} />
-                  Upload Drawing
-                  <input
-                    type="file"
-                    accept=".pdf,.dwg,.dxf,.png,.jpg,.jpeg,.xlsx"
-                    onChange={uploadDrawing}
-                  />
-                </label>
-              </div>
-
-              <div className="panel">
-                <Field label="Drawing Department">
-                  <select
-                    value={form.department}
-                    onChange={e => setForm({
-                      ...form,
-                      department: e.target.value
-                    })}
-                  >
-                    {DEPTS.map(d => <option key={d}>{d}</option>)}
-                  </select>
-                </Field>
-
-                <div className="dept-grid">
-                  {DEPTS.map(d => (
-                    <div className="dept" key={d}>
-                      <b>{d}</b>
-                      <small>
-                        {docs.filter(x => x.department === d).length} files
-                      </small>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="panel">
-                <h2>Saved Drawings</h2>
-
-                {docs.map(f => (
-                  <div className="file-row" key={f.id}>
-                    <FolderOpen />
-
-                    <div>
-                      <b>{f.file_name}</b>
-                      <small>{f.department}</small>
-                    </div>
-
-                    <button
-                      className="link"
-                      onClick={async () => {
-                        const { data, error } = await supabase.storage
-                          .from('drawings')
-                          .createSignedUrl(f.storage_path, 120);
-
-                        if (error) {
-                          setNotice(error.message);
-                        } else {
-                          window.open(data.signedUrl, '_blank');
-                        }
-                      }}
-                    >
-                      Open
-                    </button>
-                  </div>
-                ))}
-
-                {!docs.length && (
-                  <div className="empty">No drawings uploaded yet.</div>
-                )}
-              </div>
-            </>
-          )}
-
-          {selectedBill && (
-            <div className="panel bill-view">
-              <div className="panel-head">
-                <h2>
-                  {selectedBill.type === 'vendor' ? 'Vendor' : 'Customer'} Bill Abstract
-                </h2>
-
-                <div className="actions">
-                  <button className="secondary" onClick={printAbstract}>
-                    <Printer size={16} />
-                    Print / PDF
-                  </button>
-
-                  <button
-                    className="secondary"
-                    onClick={() => setSelectedBill(null)}
-                  >
-                    <X size={16} />
-                    Close
-                  </button>
-                </div>
-              </div>
-
-              <p><b>Bill No:</b> {selectedBill.bill.bill_no}</p>
-
-              <p>
-                <b>Bill Date:</b> {selectedBill.bill.bill_date}
-                {'　'}
-                <b>Billing Period:</b> {selectedBill.bill.billing_period}
-              </p>
-
-              {selectedBill.type === 'vendor'
-                ? (
-                  <p>
-                    <b>Agency:</b> {selectedBill.bill.agency_name}
-                  </p>
-                )
-                : (
-                  <p>
-                    <b>Project:</b> {selectedBill.bill.project_name}
-                    {'　'}
-                    <b>Contract:</b> {selectedBill.bill.contract_ref}
-                  </p>
-                )}
-
-              <p>
-                <b>Total Amount:</b> {money(selectedBill.bill.total_amount)}
-              </p>
-
-              {selectedBill.type === 'vendor' && (
-                <p>
-                  <b>Net Payable:</b> {money(selectedBill.bill.net_payable)}
-                </p>
-              )}
-
-              <div className="table-wrap">
-                <table>
-                  <tbody>
-                    {billRows(selectedBill.bill).map((r, i) => (
-                      <tr key={i}>
-                        {(Array.isArray(r) ? r : Object.values(r || {})).map((v, j) => (
-                          <td key={j}>{String(v ?? '')}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
-        </div>
-      </main>
-    </div>
-  );
-}
-
-function Setup() {
-  return (
-    <div className="login-wrap">
-      <div className="login-card">
-        <Factory size={38} />
-        <h1>Boiler Management</h1>
-        <p>Supabase connection required</p>
-        <div className="setup-error">
-          Project URL या Publishable Key सेट नहीं है।
-        </div>
+  for(const [table,setter,sort] of specs){
+   const {data,error}=await supabase.from(table).select('*').order(sort,{ascending:false});
+   if(!error)setter(data||[]);
+   else setNotice(table+': '+error.message);
+  }
+  setBusy(false);
+ }
+
+ async function login(e){
+  e.preventDefault();
+  setBusy(true);
+  const {error}=await supabase.auth.signInWithPassword({email,password});
+  setNotice(error?.message||'Login successful');
+  setBusy(false);
+ }
+
+ async function saveDpr(e){
+  e.preventDefault();
+  const payload={
+   ...dform,
+   quantity:+dform.quantity||0,
+   weight:+dform.weight||0,
+   pre_assembly:+dform.pre_assembly||0,
+   placement:+dform.placement||0,
+   alignment:+dform.alignment||0,
+   bolting:+dform.bolting||0,
+   user_id:session.user.id
+  };
+  const {error}=await supabase.from('dpr_entries').upsert(payload,{
+   onConflict:'work_date,department,pg,ma,du'
+  });
+  setNotice(error?.message||'DPR saved / updated');
+  if(!error){
+   setDform({...blankDpr,work_date:dform.work_date,department:dform.department});
+   loadAll();
+  }
+ }
+
+ async function deleteRow(table,id){
+  if(!confirm('क्या आप यह रिकॉर्ड हटाना चाहते हैं?'))return;
+  const {error}=await supabase.from(table).delete().eq('id',id);
+  setNotice(error?.message||'Record deleted');
+  if(!error)loadAll();
+ }
+
+ function billPayload(f){
+  return {
+   ...f,
+   previous_amount:+f.previous_amount||0,
+   current_amount:+f.current_amount||0,
+   cumulative_amount:+f.cumulative_amount||0,
+   gst_amount:+f.gst_amount||0,
+   gross_bill:+f.gross_bill||0,
+   deductions:+f.deductions||0,
+   net_payable:+f.net_payable||0,
+   user_id:session.user.id
+  };
+ }
+
+ async function saveBill(kind,e){
+  e.preventDefault();
+  const table=kind==='vendor'?'vendor_bills':'customer_bill_abstracts';
+  const form=kind==='vendor'?vform:cform;
+  const {error}=await supabase.from(table).insert(billPayload(form));
+  setNotice(error?.message||'Bill saved successfully');
+  if(!error){
+   if(kind==='vendor')setVform(blankBill);
+   else setCform({...blankBill,agency_name:'BHEL PSER LARA SITE'});
+   loadAll();
+  }
+ }
+
+ function addItem(kind){
+  const setter=kind==='vendor'?setVform:setCform;
+  const form=kind==='vendor'?vform:cform;
+  setter({...form,abstract_json:[...(form.abstract_json||[]),{description:'',qty:0,unit:'',rate:0}]});
+ }
+
+ function updateItem(kind,i,key,val){
+  const setter=kind==='vendor'?setVform:setCform;
+  const form=kind==='vendor'?vform:cform;
+  const items=[...(form.abstract_json||[])];
+  items[i]={...items[i],[key]:val};
+  setter({...form,abstract_json:items});
+ }
+
+ async function uploadDrawing(e){
+  const file=e.target.files?.[0];
+  if(!file)return;
+  const allowed=['pdf','dwg','dxf','png','jpg','jpeg','xlsx','xls'];
+  const ext=file.name.split('.').pop().toLowerCase();
+  if(!allowed.includes(ext)){
+   setNotice('यह file type allowed नहीं है');
+   e.target.value='';
+   return;
+  }
+  if(file.size>50*1024*1024){
+   setNotice('File 50 MB से बड़ी है');
+   e.target.value='';
+   return;
+  }
+  setBusy(true);
+  const path=`${session.user.id}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g,'_')}`;
+  const {error:upErr}=await supabase.storage.from('drawings').upload(path,file,{
+   upsert:false,
+   contentType:file.type||'application/octet-stream'
+  });
+  if(upErr){
+   setNotice('Upload failed: '+upErr.message);
+   setBusy(false);
+   return;
+  }
+  const {error:dbErr}=await supabase.from('drawings').insert({
+   file_name:file.name,
+   storage_path:path,
+   department:uploadDept,
+   user_id:session.user.id
+  });
+  if(dbErr){
+   await supabase.storage.from('drawings').remove([path]);
+   setNotice('Record save failed: '+dbErr.message);
+  }else{
+   setNotice('Drawing uploaded successfully');
+   loadAll();
+  }
+  setBusy(false);
+  e.target.value='';
+ }
+
+ async function openDrawing(f){
+  const {data,error}=await supabase.storage.from('drawings').createSignedUrl(f.storage_path,3600);
+  if(error)setNotice(error.message);
+  else window.open(data.signedUrl,'_blank','noopener,noreferrer');
+ }
+
+ function excelBill(b,kind){
+  const aoa=[
+   [COMPANY],['BILL ABSTRACT'],
+   ['Bill Type',kind==='vendor'?'VENDOR BILL':'CUSTOMER BILL'],
+   ['Agency / Customer',b.agency_name||''],
+   ['Bill No.',b.bill_no||'','Bill Date',b.bill_date||''],
+   ['Billing Period',`${b.period_from||''} to ${b.period_to||''}`],
+   [],
+   ['S.No.','Description','Quantity','Unit','Rate','Amount'],
+   ...(b.abstract_json||[]).map((r,i)=>[
+    i+1,r.description,r.qty,r.unit,r.rate,(+r.qty||0)*(+r.rate||0)
+   ]),
+   [],
+   ['Previous Amount',b.previous_amount],
+   ['Current Amount',b.current_amount],
+   ['Cumulative Amount',b.cumulative_amount],
+   ['GST',b.gst_amount],
+   ['Gross Bill',b.gross_bill],
+   ['Deductions',b.deductions],
+   ['NET PAYABLE',b.net_payable]
+  ];
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges']=[
+   {s:{r:0,c:0},e:{r:0,c:5}},
+   {s:{r:1,c:0},e:{r:1,c:5}}
+  ];
+  ws['!cols']=[
+   {wch:12},{wch:42},{wch:14},{wch:12},{wch:16},{wch:18}
+  ];
+  const range=XLSX.utils.decode_range(ws['!ref']);
+  for(let R=0;R<=range.e.r;R++){
+   for(let C=0;C<=range.e.c;C++){
+    const cell=ws[XLSX.utils.encode_cell({r:R,c:C})];
+    if(!cell)continue;
+    cell.s={
+     font:{
+      name:'Arial',
+      sz:R<2?14:10,
+      bold:R<2||R===7||R>=aoa.length-7,
+      color:{rgb:R===aoa.length-1?'FFFFFF':'172B4D'}
+     },
+     alignment:{vertical:'center',horizontal:C>=2?'right':'left',wrapText:true},
+     border:{
+      top:{style:'thin',color:{rgb:'CBD5E1'}},
+      bottom:{style:'thin',color:{rgb:'CBD5E1'}},
+      left:{style:'thin',color:{rgb:'CBD5E1'}},
+      right:{style:'thin',color:{rgb:'CBD5E1'}}
+     },
+     fill:{fgColor:{rgb:R===aoa.length-1?'173B67':R===7?'DCE8F5':R<2?'EAF1F8':'FFFFFF'}}
+    };
+   }
+  }
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,ws,'Bill Abstract');
+  XLSX.writeFile(wb,`${kind}_${(b.bill_no||'Bill').replace(/[^a-z0-9_-]/gi,'_')}.xlsx`);
+ }
+
+ function printBill(b,kind){
+  const w=window.open('','_blank');
+  if(!w)return;
+  const items=(b.abstract_json||[]).map((r,i)=>
+   `<tr><td>${i+1}</td><td>${esc(r.description)}</td><td>${r.qty||0}</td><td>${esc(r.unit)}</td><td>${money(r.rate)}</td><td>${money((+r.qty||0)*(+r.rate||0))}</td></tr>`
+  ).join('');
+  w.document.write(`
+   <html><head><title>${esc(b.bill_no)}</title>
+   <style>
+   body{font:12px Arial;padding:25px;color:#172b4d}
+   h1,h2{text-align:center;margin:5px}
+   table{border-collapse:collapse;width:100%;margin-top:18px}
+   td,th{border:1px solid #777;padding:7px}
+   th{background:#dce8f5}
+   .tot{width:42%;margin-left:auto}
+   .tot td:last-child{text-align:right;font-weight:bold}
+   .head{display:flex;justify-content:space-between;margin:25px 0}
+   </style></head><body>
+   <h1>${COMPANY}</h1>
+   <h2>${kind==='vendor'?'VENDOR BILL ABSTRACT':'CUSTOMER BILL ABSTRACT'}</h2>
+   <div class="head">
+    <span>Agency: ${esc(b.agency_name)}</span>
+    <span>Bill No: ${esc(b.bill_no)}</span>
+    <span>Date: ${esc(b.bill_date)}</span>
+   </div>
+   <p>Billing Period: ${esc(b.period_from)} to ${esc(b.period_to)}</p>
+   <table><tr><th>S.No.</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Amount</th></tr>${items}</table>
+   <table class="tot">${[
+    ['Previous Amount',b.previous_amount],
+    ['Current Amount',b.current_amount],
+    ['Cumulative Amount',b.cumulative_amount],
+    ['GST',b.gst_amount],
+    ['Gross Bill',b.gross_bill],
+    ['Deductions',b.deductions],
+    ['NET PAYABLE',b.net_payable]
+   ].map(([k,v])=>`<tr><td>${k}</td><td>${money(v)}</td></tr>`).join('')}</table>
+   <script>window.onload=()=>window.print()<\/script>
+   </body></html>
+  `);
+  w.document.close();
+ }
+
+ const totalDpr=dpr.reduce((a,r)=>a+(+r.quantity||0),0);
+ const vendorTotal=vendor.reduce((a,r)=>a+(+r.net_payable||0),0);
+ const customerTotal=customer.reduce((a,r)=>a+(+r.net_payable||0),0);
+
+ const nav=[
+  ['dashboard','Dashboard',LayoutDashboard],
+  ['dpr','DPR Register',ClipboardList],
+  ['vendor','Vendor Bills',Receipt],
+  ['customer','Customer Bills',FileText],
+  ['drawings','Drawings',FolderOpen]
+ ];
+
+ if(!import.meta.env.VITE_SUPABASE_URL||
+ !(import.meta.env.VITE_SUPABASE_ANON_KEY||import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY)){
+  return <div className="login-wrap"><div className="login-card">
+   <Factory size={38}/><h1>{COMPANY}</h1>
+   <p>Supabase configuration missing</p>
+   <p>.env में VITE_SUPABASE_URL और VITE_SUPABASE_ANON_KEY सेट करें।</p>
+  </div></div>;
+ }
+
+ if(!session){
+  return <div className="login-wrap">
+   <form className="login-card" onSubmit={login}>
+    <div className="logo"><Building2 size={34}/></div>
+    <h1>{COMPANY}</h1>
+    <p>Boiler Construction Management Portal</p>
+    <label>Email</label>
+    <input type="email" value={email} onChange={e=>setEmail(e.target.value)} required/>
+    <label>Password</label>
+    <input type="password" value={password} onChange={e=>setPassword(e.target.value)} required/>
+    <button className="primary full" disabled={busy}>
+     <LockKeyhole size={17}/> {busy?'Please wait...':'Login Securely'}
+    </button>
+    {notice&&<small>{notice}</small>}
+   </form>
+  </div>;
+ }
+
+ return <div className="app">
+  <aside className={mobile?'open':''}>
+   <div className="brand">
+    <Factory/>
+    <span>{COMPANY}<small>BOILER MANAGEMENT</small></span>
+    <button className="mobile-close" onClick={()=>setMobile(false)}><X/></button>
+   </div>
+   <div className="nav-label">MAIN MENU</div>
+   {nav.map(([id,label,Icon])=>
+    <button key={id} className={'nav '+(tab===id?'active':'')} onClick={()=>{
+     setTab(id);setMobile(false);
+    }}>
+     <Icon size={18}/>{label}
+    </button>
+   )}
+   <div className="side-bottom">
+    <span>Secure workspace</span>
+    <button className="nav" onClick={()=>supabase.auth.signOut()}>
+     <LogOut size={18}/>Logout
+    </button>
+   </div>
+  </aside>
+
+  <main>
+   <header>
+    <button className="menu" onClick={()=>setMobile(!mobile)}><Menu/></button>
+    <div><b>{COMPANY}</b><small>Boiler Construction Project Workspace</small></div>
+    <button className="icon-btn" onClick={loadAll} disabled={busy}><RefreshCw size={18}/></button>
+   </header>
+
+   <div className="content">
+    {notice&&<div className="notice" onClick={()=>setNotice('')}>{notice}　×</div>}
+
+    {tab==='dashboard'&&<>
+     <div className="welcome">
+      <div><span className="eyebrow">COMPANY WORKSPACE</span>
+       <h1>{COMPANY}</h1>
+       <p>Project billing, daily progress and drawing records — all in one place.</p>
       </div>
-    </div>
-  );
+      <button className="primary" onClick={()=>setTab('vendor')}><Plus size={17}/> New Bill</button>
+     </div>
+     <div className="stats">
+      <Stat title="DPR Entries" value={dpr.length}/>
+      <Stat title="Total DPR Quantity" value={totalDpr.toLocaleString('en-IN')}/>
+      <Stat title="Vendor Bill Value" value={money(vendorTotal)}/>
+      <Stat title="Customer Bill Value" value={money(customerTotal)}/>
+     </div>
+     <div className="panel">
+      <div className="panel-head"><h2>Quick Actions</h2></div>
+      <div className="quick-grid">
+       <button onClick={()=>setTab('dpr')}><ClipboardList/> Add DPR Entry</button>
+       <button onClick={()=>setTab('vendor')}><Receipt/> Create Vendor Bill</button>
+       <button onClick={()=>setTab('customer')}><FileText/> Create Customer Bill</button>
+       <button onClick={()=>setTab('drawings')}><Upload/> Upload Drawing</button>
+      </div>
+     </div>
+     <div className="panel">
+      <h2>Recent DPR Entries</h2>
+      <DprTable rows={dpr.slice(0,8)} onDelete={id=>deleteRow('dpr_entries',id)}/>
+     </div>
+    </>}
+
+    {tab==='dpr'&&<>
+     <PageTitle title="DPR Register" desc="Department-wise daily progress. Same date + department + PG + MA + DU updates existing record."/>
+     <div className="panel">
+      <h2>Add / Update Daily Progress</h2>
+      <form className="entry-grid" onSubmit={saveDpr}>
+       <Field label="Date"><input type="date" value={dform.work_date} onChange={e=>setDform({...dform,work_date:e.target.value})} required/></Field>
+       <Field label="Department"><select value={dform.department} onChange={e=>setDform({...dform,department:e.target.value})}>{DEPTS.map(x=><option key={x}>{x}</option>)}</select></Field>
+       {['pg','ma','du','description','quantity','weight','pre_assembly','placement','alignment','bolting','remark'].map(k=>
+        <Field key={k} label={k.replaceAll('_',' ').toUpperCase()}>
+         <input type={['quantity','weight','pre_assembly','placement','alignment','bolting'].includes(k)?'number':'text'} step="any" value={dform[k]} onChange={e=>setDform({...dform,[k]:e.target.value})}/>
+        </Field>
+       )}
+       <div className="form-end"><button className="primary"><Plus size={16}/> Save / Update DPR</button></div>
+      </form>
+     </div>
+     <div className="panel">
+      <div className="panel-head"><h2>All DPR Records</h2><button className="secondary" onClick={()=>exportDpr(dpr)}><Download size={16}/> Excel</button></div>
+      <DprTable rows={dpr} onDelete={id=>deleteRow('dpr_entries',id)}/>
+     </div>
+    </>}
+
+    {tab==='vendor'&&<BillPage kind="vendor" form={vform} setForm={setVform} save={e=>saveBill('vendor',e)} addItem={()=>addItem('vendor')} updateItem={(i,k,v)=>updateItem('vendor',i,k,v)} rows={vendor} view={b=>setView({bill:b,kind:'vendor'})} excel={b=>excelBill(b,'vendor')} print={b=>printBill(b,'vendor')} remove={id=>deleteRow('vendor_bills',id)}/>}
+
+    {tab==='customer'&&<BillPage kind="customer" form={cform} setForm={setCform} save={e=>saveBill('customer',e)} addItem={()=>addItem('customer')} updateItem={(i,k,v)=>updateItem('customer',i,k,v)} rows={customer} view={b=>setView({bill:b,kind:'customer'})} excel={b=>excelBill(b,'customer')} print={b=>printBill(b,'customer')} remove={id=>deleteRow('customer_bill_abstracts',id)}/>}
+
+    {tab==='drawings'&&<>
+     <PageTitle title="Drawing Library" desc="Upload PDF, DWG, DXF, images and Excel drawings securely."/>
+     <div className="panel">
+      <div className="entry-grid">
+       <Field label="Department"><select value={uploadDept} onChange={e=>setUploadDept(e.target.value)}>{DEPTS.map(x=><option key={x}>{x}</option>)}</select></Field>
+       <Field label="Select Drawing"><input type="file" accept=".pdf,.dwg,.dxf,.png,.jpg,.jpeg,.xlsx,.xls" onChange={uploadDrawing}/></Field>
+       <span className="hint">Maximum 50 MB. Allowed: PDF, DWG, DXF, JPG, PNG, XLSX.</span>
+      </div>
+     </div>
+     <div className="panel">
+      <h2>Uploaded Files ({drawings.length})</h2>
+      {drawings.map(f=><div className="file-row" key={f.id}>
+       <FolderOpen/>
+       <div><b>{f.file_name}</b><small>{f.department}</small></div>
+       <button className="secondary" onClick={()=>openDrawing(f)}><Eye size={15}/> See / Download</button>
+       <button className="delete" onClick={()=>deleteRow('drawings',f.id)}><Trash2 size={15}/></button>
+      </div>)}
+     </div>
+    </>}
+   </div>
+  </main>
+
+  {view&&<BillPreview bill={view.bill} kind={view.kind} close={()=>setView(null)} excel={()=>excelBill(view.bill,view.kind)} print={()=>printBill(view.bill,view.kind)}/>}
+ </div>;
 }
 
-function Stat({ title, value }) {
-  return (
-    <div className="stat">
-      <small>{title}</small>
-      <strong>{value}</strong>
+function BillPage({kind,form,setForm,save,addItem,updateItem,rows,view,excel,print,remove}){
+ const vendor=kind==='vendor';
+ return <>
+  <PageTitle title={vendor?'Vendor Bills':'Customer Bills'} desc="Enter bill values manually. Preview and Excel export use the same abstract data."/>
+  <div className="panel">
+   <h2>{vendor?'Create Vendor Bill':'Create Customer Bill'}</h2>
+   <form onSubmit={save}>
+    <div className="entry-grid">
+     <Field label="Agency / Customer Name"><input value={form.agency_name} onChange={e=>setForm({...form,agency_name:e.target.value})} required/></Field>
+     <Field label="Bill Number"><input value={form.bill_no} onChange={e=>setForm({...form,bill_no:e.target.value})} required/></Field>
+     <Field label="Bill Date"><input type="date" value={form.bill_date} onChange={e=>setForm({...form,bill_date:e.target.value})} required/></Field>
+     <Field label="Period From"><input type="date" value={form.period_from} onChange={e=>setForm({...form,period_from:e.target.value})}/></Field>
+     <Field label="Period To"><input type="date" value={form.period_to} onChange={e=>setForm({...form,period_to:e.target.value})}/></Field>
     </div>
-  );
+
+    <div className="panel-head"><h3>Bill Abstract / Items</h3><button type="button" className="secondary" onClick={addItem}><Plus size={15}/> Add Item</button></div>
+    <div className="table-wrap"><table>
+     <thead><tr><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Amount</th><th></th></tr></thead>
+     <tbody>{(form.abstract_json||[]).map((r,i)=><tr key={i}>
+      <td><input value={r.description} onChange={e=>updateItem(i,'description',e.target.value)}/></td>
+      <td><input type="number" step="any" value={r.qty} onChange={e=>updateItem(i,'qty',e.target.value)}/></td>
+      <td><input value={r.unit} onChange={e=>updateItem(i,'unit',e.target.value)}/></td>
+      <td><input type="number" step="any" value={r.rate} onChange={e=>updateItem(i,'rate',e.target.value)}/></td>
+      <td>{money((+r.qty||0)*(+r.rate||0))}</td>
+      <td><button type="button" className="delete" onClick={()=>setForm({...form,abstract_json:form.abstract_json.filter((_,n)=>n!==i)})}><Trash2 size={14}/></button></td>
+     </tr>)}</tbody>
+    </table></div>
+
+    <div className="entry-grid totals-grid">
+     {['previous_amount','current_amount','cumulative_amount','gst_amount','gross_bill','deductions','net_payable'].map(k=>
+      <Field label={k.replaceAll('_',' ').toUpperCase()} key={k}>
+       <input type="number" step="0.01" value={form[k]} onChange={e=>setForm({...form,[k]:e.target.value})}/>
+      </Field>
+     )}
+    </div>
+    <div className="form-end"><button className="primary"><Plus size={16}/> Save {vendor?'Vendor':'Customer'} Bill</button></div>
+   </form>
+  </div>
+
+  <div className="panel">
+   <div className="panel-head"><h2>Saved {vendor?'Vendor':'Customer'} Bills</h2><span>{rows.length} records</span></div>
+   <div className="table-wrap"><table>
+    <thead><tr><th>Bill No.</th><th>Agency / Customer</th><th>Date</th><th>Period</th><th>Net Payable</th><th>Actions</th></tr></thead>
+    <tbody>{rows.map(b=><tr key={b.id}>
+     <td>{b.bill_no}</td><td>{b.agency_name}</td><td>{b.bill_date}</td>
+     <td>{b.period_from} to {b.period_to}</td><td>{money(b.net_payable)}</td>
+     <td className="actions">
+      <button className="secondary" onClick={()=>view(b)}><Eye size={14}/> See</button>
+      <button className="secondary" onClick={()=>excel(b)}><Download size={14}/> Excel</button>
+      <button className="delete" onClick={()=>remove(b.id)}><Trash2 size={14}/></button>
+     </td>
+    </tr>)}</tbody>
+   </table>
+   {!rows.length&&<div className="empty">अभी कोई बिल सेव नहीं है।</div>}
+   </div>
+  </div>
+ </>;
 }
 
-function Field({ label, children }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
+function BillPreview({bill,kind,close,excel,print}){
+ return <div className="modal-back" onClick={close}>
+  <div className="bill-modal" onClick={e=>e.stopPropagation()}>
+   <div className="modal-actions">
+    <button className="secondary" onClick={excel}><Download size={15}/> Download Excel</button>
+    <button className="secondary" onClick={print}><Printer size={15}/> Print</button>
+    <button className="delete" onClick={close}><X/></button>
+   </div>
+   <div className="bill-paper">
+    <h1>{COMPANY}</h1>
+    <h2>{kind==='vendor'?'VENDOR BILL ABSTRACT':'CUSTOMER BILL ABSTRACT'}</h2>
+    <div className="bill-meta">
+     <span><b>Agency:</b> {bill.agency_name}</span>
+     <span><b>Bill No:</b> {bill.bill_no}</span>
+     <span><b>Date:</b> {bill.bill_date}</span>
+     <span><b>Period:</b> {bill.period_from} to {bill.period_to}</span>
+    </div>
+    <table><thead><tr><th>S.No.</th><th>Description</th><th>Qty</th><th>Unit</th><th>Rate</th><th>Amount</th></tr></thead>
+     <tbody>{(bill.abstract_json||[]).map((r,i)=><tr key={i}>
+      <td>{i+1}</td><td>{r.description}</td><td>{r.qty}</td><td>{r.unit}</td><td>{money(r.rate)}</td><td>{money((+r.qty||0)*(+r.rate||0))}</td>
+     </tr>)}</tbody>
+    </table>
+    <table className="bill-totals"><tbody>
+     {[
+      ['Previous Amount',bill.previous_amount],
+      ['Current Amount',bill.current_amount],
+      ['Cumulative Amount',bill.cumulative_amount],
+      ['GST',bill.gst_amount],
+      ['Gross Bill',bill.gross_bill],
+      ['Deductions',bill.deductions],
+      ['NET PAYABLE',bill.net_payable]
+     ].map(([k,v])=><tr key={k}><th>{k}</th><td>{money(v)}</td></tr>)}
+    </tbody></table>
+   </div>
+  </div>
+ </div>;
 }
 
-function DprTable({ rows, onDelete }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            {[
-              'Date', 'Dept.', 'PG', 'MA', 'DU', 'Description',
-              'Qty', 'Unit Weight', 'Total Weight', 'Pre-Assembly',
-              'Placement', 'Alignment', 'Bolting', 'Remarks', ''
-            ].map(x => <th key={x}>{x}</th>)}
-          </tr>
-        </thead>
-
-        <tbody>
-          {rows.map(r => (
-            <tr key={r.id}>
-              <td>{r.work_date}</td>
-              <td>{r.department}</td>
-              <td>{r.pg}</td>
-              <td>{r.ma}</td>
-              <td>{r.du}</td>
-              <td>{r.description}</td>
-              <td>{r.quantity}</td>
-              <td>{r.unit_weight ?? 0}</td>
-              <td>{weight(r.quantity, r.unit_weight)}</td>
-              <td>{r.pre_assembly}</td>
-              <td>{r.placement}</td>
-              <td>{r.alignment}</td>
-              <td>{r.bolting}</td>
-              <td>{r.remark}</td>
-              <td>
-                <button
-                  className="delete"
-                  onClick={() => onDelete(r.id)}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {!rows.length && (
-        <div className="empty">No records found.</div>
-      )}
-    </div>
-  );
+function PageTitle({title,desc}){
+ return <div className="welcome"><div><span className="eyebrow">PROJECT MANAGEMENT</span><h1>{title}</h1><p>{desc}</p></div></div>;
+}
+function Stat({title,value}){
+ return <div className="stat"><small>{title}</small><strong>{value}</strong></div>;
+}
+function Field({label,children}){
+ return <label className="field"><span>{label}</span>{children}</label>;
+}
+function DprTable({rows,onDelete}){
+ return <div className="table-wrap"><table>
+  <thead><tr>{['Date','Department','PG','MA','DU','Description','Qty','Weight','Pre-Assembly','Placement','Alignment','Bolting','Remark',''].map(x=><th key={x}>{x}</th>)}</tr></thead>
+  <tbody>{rows.map(r=><tr key={r.id}>
+   <td>{r.work_date}</td><td>{r.department}</td><td>{r.pg}</td><td>{r.ma}</td><td>{r.du}</td>
+   <td>{r.description}</td><td>{r.quantity}</td><td>{r.weight}</td><td>{r.pre_assembly}</td>
+   <td>{r.placement}</td><td>{r.alignment}</td><td>{r.bolting}</td><td>{r.remark}</td>
+   <td><button className="delete" onClick={()=>onDelete(r.id)}><Trash2 size={14}/></button></td>
+  </tr>)}</tbody>
+ </table>
+ {!rows.length&&<div className="empty">No DPR records found.</div>}
+ </div>;
 }
 
-function DataTable({ rows, columns }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            {columns.map(c => (
-              <th key={c}>{c.replaceAll('_', ' ')}</th>
-            ))}
-          </tr>
-        </thead>
-
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={r.id || i}>
-              {columns.map(c => (
-                <td key={c}>{r[c] ?? ''}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {!rows.length && (
-        <div className="empty">No records yet.</div>
-      )}
-    </div>
-  );
+function exportDpr(rows){
+ const wb=XLSX.utils.book_new();
+ for(const dept of DEPTS){
+  const data=rows.filter(r=>r.department===dept);
+  const ws=XLSX.utils.json_to_sheet(data);
+  XLSX.utils.book_append_sheet(wb,ws,dept.slice(0,31));
+ }
+ XLSX.writeFile(wb,'DPR_Seven_Departments.xlsx');
 }
-
-function BillTable({ bills, type, paidFor, outstanding, onView }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Bill No.</th>
-            <th>{type === 'vendor' ? 'Agency' : 'Project'}</th>
-            <th>Bill Date</th>
-            <th>Billing Period</th>
-            <th>Bill Amount</th>
-            <th>{type === 'vendor' ? 'Paid' : 'Received'}</th>
-            <th>Outstanding</th>
-            <th>View</th>
-          </tr>
-        </thead>
-
-        <tbody>
-          {bills.map(b => (
-            <tr key={b.id}>
-              <td>{b.bill_no}</td>
-              <td>
-                {type === 'vendor' ? b.agency_name : b.project_name}
-              </td>
-              <td>{b.bill_date}</td>
-              <td>{b.billing_period}</td>
-              <td>
-                {money(
-                  type === 'vendor'
-                    ? (b.net_payable || b.total_amount)
-                    : b.total_amount
-                )}
-              </td>
-              <td>{money(paidFor(b.id))}</td>
-              <td>{money(outstanding(b))}</td>
-              <td>
-                <button
-                  className="secondary"
-                  onClick={() => onView({ bill: b, type })}
-                >
-                  <Eye size={15} />
-                  View
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      {!bills.length && (
-        <div className="empty">No bills saved yet.</div>
-      )}
-    </div>
-  );
+function esc(s){
+ return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
 export default App;
+
