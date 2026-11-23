@@ -562,6 +562,19 @@ function App() {
     weight: a.weight + num(r.weight)
   }), { qty: 0, weight: 0 }), [rows]);
 
+  const stageMonthTotals = useMemo(() => DPR_STAGES.map(stage => ({
+    ...stage,
+    qty: monthRows.reduce((sum, row) => sum + num(row[stage.key]), 0),
+    weight: monthRows.reduce((sum, row) => sum + weight(row[stage.key], row.unit_weight), 0),
+    entries: monthRows.filter(row => num(row[stage.key]) > 0).length
+  })), [monthRows]);
+
+  const allVendorBilled = bills.reduce((sum, bill) => sum + num(bill.net_payable || bill.total_amount), 0);
+  const allVendorPaid = vendorPayments.reduce((sum, payment) => sum + num(payment.amount), 0);
+  const allCustomerBilled = customerBills.reduce((sum, bill) => sum + num(bill.total_amount), 0);
+  const allCustomerReceived = customerReceipts.reduce((sum, receipt) => sum + num(receipt.amount), 0);
+  const recentDprRows = [...rows].sort((a, b) => String(b.work_date || '').localeCompare(String(a.work_date || ''))).slice(0, 6);
+
   const vendorMonthBills = bills.filter(b => {
     const d = b.bill_date ? new Date(b.bill_date + 'T00:00:00') : null;
     return d &&
@@ -1185,8 +1198,8 @@ function App() {
             <Factory size={34} />
           </div>
 
-          <h1>Boiler Management</h1>
-          <p>Construction Management System</p>
+          <h1>P.E. ERECTORS</h1>
+          <p>Boiler Project Management System</p>
 
           <label>Email</label>
           <input
@@ -1240,14 +1253,34 @@ function App() {
   ];
 
   return (
-    <div className="app">
+    <div className="app pe-professional-ui">
+      <style>{`
+        .pe-professional-ui{--pe-ink:#14243a;--pe-muted:#64748b;--pe-line:#e5eaf1;--pe-blue:#1769aa;--pe-navy:#10243b;background:#f4f7fb;color:var(--pe-ink)}
+        .pe-professional-ui aside{background:linear-gradient(180deg,#10243b 0%,#173958 100%);color:#fff;box-shadow:8px 0 28px rgba(15,35,58,.10)}
+        .pe-professional-ui .brand{border-bottom:1px solid rgba(255,255,255,.13);padding-bottom:22px}.pe-professional-ui .nav-label{color:#9db3c9;letter-spacing:1.5px;font-size:10px}
+        .pe-professional-ui .nav{border-radius:10px;margin:3px 10px;width:calc(100% - 20px);color:#d8e4ef;transition:.18s}.pe-professional-ui .nav:hover{background:rgba(255,255,255,.10)}.pe-professional-ui .nav.active{background:#fff;color:#143451;box-shadow:0 6px 18px rgba(0,0,0,.12);font-weight:700}
+        .pe-professional-ui main{background:#f4f7fb}.pe-professional-ui header{background:rgba(255,255,255,.94);border-bottom:1px solid var(--pe-line);box-shadow:0 3px 14px rgba(15,35,58,.04);backdrop-filter:blur(10px)}
+        .pe-professional-ui header small{color:var(--pe-muted)}.pe-professional-ui .content{max-width:1680px;margin:0 auto;padding:26px 30px 42px}
+        .pe-professional-ui .welcome{align-items:center;padding:24px 26px;border:1px solid #dce6f0;border-radius:18px;background:linear-gradient(115deg,#fff 0%,#edf5fc 100%);box-shadow:0 8px 24px rgba(22,55,86,.05);margin-bottom:18px}
+        .pe-professional-ui .welcome h1{color:#122d48;letter-spacing:-.5px}.pe-professional-ui .eyebrow{color:#1b6da9;font-weight:800;letter-spacing:1.5px}
+        .pe-professional-ui .panel{border:1px solid var(--pe-line);border-radius:16px;background:#fff;box-shadow:0 5px 18px rgba(18,43,68,.045);padding:20px;margin-bottom:18px}
+        .pe-professional-ui .panel h2{color:#183650;font-size:17px}.pe-professional-ui .stats{gap:14px}.pe-professional-ui .stats>div,.pe-professional-ui .stat{border:1px solid var(--pe-line);border-radius:14px;background:#fff;box-shadow:0 4px 14px rgba(18,43,68,.035);padding:17px}
+        .pe-professional-ui .dept{border:1px solid var(--pe-line);border-radius:13px;background:linear-gradient(145deg,#fff,#f8fbfe);padding:16px}.pe-professional-ui .dept strong{color:#1769aa}
+        .pe-professional-ui table{border-collapse:separate;border-spacing:0;min-width:700px}.pe-professional-ui th{background:#edf3f8;color:#29445d;font-size:11px;text-transform:uppercase;letter-spacing:.45px;position:sticky;top:0}.pe-professional-ui td,.pe-professional-ui th{border-bottom:1px solid #e8edf3;padding:11px 10px}.pe-professional-ui tbody tr:hover{background:#f6faff}
+        .pe-professional-ui input,.pe-professional-ui select,.pe-professional-ui textarea{border:1px solid #d6e0ea;border-radius:9px;background:#fff}.pe-professional-ui input:focus,.pe-professional-ui select:focus,.pe-professional-ui textarea:focus{outline:2px solid rgba(23,105,170,.14);border-color:#4d91c4}
+        .pe-professional-ui button.primary{background:linear-gradient(135deg,#1769aa,#124c7d);box-shadow:0 5px 12px rgba(23,105,170,.18)}.pe-professional-ui button.secondary{border:1px solid #d5e1eb;background:#fff;color:#24435e;border-radius:9px}
+        .pe-stage-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.pe-stage-card{border:1px solid #e1e9f1;border-radius:13px;padding:15px;background:linear-gradient(145deg,#fff,#f7fafd);min-width:0}.pe-stage-card .pe-stage-name{font-size:12px;font-weight:800;color:#486078;text-transform:uppercase;letter-spacing:.6px}.pe-stage-card .pe-stage-qty{font-size:24px;font-weight:800;color:#173b5b;margin:7px 0 2px}.pe-stage-card .pe-stage-weight{font-size:12px;color:#64788c}.pe-stage-card .pe-stage-meta{font-size:11px;color:#7b8da0;margin-top:8px}
+        .pe-dashboard-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(280px,.85fr);gap:18px}.pe-finance-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.pe-finance-tile{border:1px solid #e4ebf2;border-radius:12px;padding:14px;background:#fbfdff}.pe-finance-tile small{display:block;color:#708398;font-size:11px;margin-bottom:6px}.pe-finance-tile strong{font-size:17px;color:#173b5b;overflow-wrap:anywhere}.pe-alert-line{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #edf1f5;font-size:13px}.pe-alert-line:last-child{border-bottom:0}.pe-muted{color:#718398;font-size:12px}
+        @media(max-width:1050px){.pe-stage-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.pe-dashboard-grid{grid-template-columns:1fr}.pe-finance-strip{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:650px){.pe-professional-ui .content{padding:16px 12px 30px}.pe-professional-ui .welcome{padding:18px}.pe-stage-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.pe-stage-card{padding:12px}.pe-stage-card .pe-stage-qty{font-size:20px}.pe-finance-strip{grid-template-columns:1fr 1fr}}
+      `}</style>
       <aside className={mobile ? 'open' : ''}>
         <div className="brand">
           <Factory />
           <span>
-            BOILER
+            P.E. ERECTORS
             <br />
-            <b>MANAGEMENT</b>
+            <b>PROJECT CONTROL</b>
           </span>
 
           <button
@@ -1298,7 +1331,7 @@ function App() {
 
           <div>
             <b>{nav.find(n => n[0] === tab)?.[1] || 'Dashboard'}</b>
-            <small>Boiler Construction Project Workspace</small>
+            <small>P.E. ERECTORS PVT. LTD. · Boiler Project Control</small>
           </div>
 
           <button
@@ -1398,13 +1431,42 @@ function App() {
                 {showWeightDetails && <div className="dept-grid">{DEPTS.map(d=>{const a=rows.filter(r=>r.department===d);return <div className="dept" key={d}><b>{d}</b><strong>{a.reduce((t,r)=>t+num(r.weight),0).toLocaleString('en-IN')}</strong><small>{a.length} DPR entries</small></div>})}</div>}
               </div>
 
+              <div className="panel">
+                <div className="panel-head"><div><h2>Stage-wise Work Summary</h2><p className="pe-muted">{MONTHS[filterMonth]} {filterYear} · Quantity और calculated weight</p></div><button className="secondary" onClick={() => setTab('dpr')}>Open DPR Register</button></div>
+                <div className="pe-stage-grid">
+                  {stageMonthTotals.map(stage => <div className="pe-stage-card" key={stage.key}><div className="pe-stage-name">{stage.label}</div><div className="pe-stage-qty">{stage.qty.toLocaleString('en-IN')}</div><div className="pe-stage-weight">{stage.weight.toLocaleString('en-IN',{maximumFractionDigits:2})} KG</div><div className="pe-stage-meta">{stage.entries} active DPR entries</div></div>)}
+                </div>
+              </div>
+
+              <div className="pe-dashboard-grid">
+                <div className="panel">
+                  <h2>Overall Financial Position</h2>
+                  <p className="pe-muted">All-time totals · All recorded bills and transactions</p>
+                  <div className="pe-finance-strip">
+                    <div className="pe-finance-tile"><small>Vendor Bill Total</small><strong>{money(allVendorBilled)}</strong></div>
+                    <div className="pe-finance-tile"><small>Vendor Paid</small><strong>{money(allVendorPaid)}</strong></div>
+                    <div className="pe-finance-tile"><small>Customer Bill Total</small><strong>{money(allCustomerBilled)}</strong></div>
+                    <div className="pe-finance-tile"><small>Customer Received</small><strong>{money(allCustomerReceived)}</strong></div>
+                  </div>
+                  <div className="pe-alert-line"><span>Vendor Outstanding</span><b>{money(allVendorBilled-allVendorPaid)}</b></div>
+                  <div className="pe-alert-line"><span>Customer Outstanding</span><b>{money(allCustomerBilled-allCustomerReceived)}</b></div>
+                  <div className="pe-alert-line"><span>Customer Billing − Vendor Billing</span><b>{money(allCustomerBilled-allVendorBilled)}</b></div>
+                  <p className="pe-muted">Billing difference केवल billed amount का अंतर है; इसे net profit न समझें।</p>
+                </div>
+                <div className="panel">
+                  <h2>Latest Site Progress</h2>
+                  {recentDprRows.length ? recentDprRows.map((r,i)=><div className="pe-alert-line" key={r.id || i}><span><b>{r.pg || 'DPR'}</b> · {r.department}<br/><small className="pe-muted">{formatDprDate(r.work_date)} · MA {r.ma} · DU {r.du}</small></span><b>{num(r.weight).toLocaleString('en-IN')} KG</b></div>) : <p className="pe-muted">अभी कोई DPR entry उपलब्ध नहीं है।</p>}
+                  <button className="secondary" onClick={() => setTab('dpr')}>View All DPR Records</button>
+                </div>
+              </div>
+
               <div className="stats">
-                <Stat title="Vendor Billed" value={money(vendorTotals.billed)} />
-                <Stat title="Vendor Paid" value={money(vendorTotals.paid)} />
-                <Stat title="Vendor Outstanding" value={money(vendorTotals.billed - vendorTotals.paid)} />
-                <Stat title="Customer Billed" value={money(customerTotals.billed)} />
-                <Stat title="Customer Received" value={money(customerTotals.received)} />
-                <Stat title="Customer Outstanding" value={money(customerTotals.billed - customerTotals.received)} />
+                <Stat title="Vendor Billed (Selected Month)" value={money(vendorTotals.billed)} />
+                <Stat title="Vendor Paid (Selected Month Bills)" value={money(vendorTotals.paid)} />
+                <Stat title="Vendor Outstanding (Selected Month)" value={money(vendorTotals.billed - vendorTotals.paid)} />
+                <Stat title="Customer Billed (Selected Month)" value={money(customerTotals.billed)} />
+                <Stat title="Customer Received (Selected Month Bills)" value={money(customerTotals.received)} />
+                <Stat title="Customer Outstanding (Selected Month)" value={money(customerTotals.billed - customerTotals.received)} />
               </div>
 
               <div className="panel">
