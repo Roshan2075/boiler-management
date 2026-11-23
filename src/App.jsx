@@ -1,4 +1,4 @@
-     import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import * as XLSX from 'xlsx-js-style';
 import {
@@ -146,144 +146,85 @@ function money(v) {
  * Excel Abstract से Bill की जानकारी पहचानने का प्रयास।
  * पूरी Original Abstract Table भी अलग से सुरक्षित रहती है।
  */
+function normalizeRaBillNo(value) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  const match = text.match(/(?:RA\s*(?:BILL)?\s*[-/#:]?\s*)(\d{1,4})/i) || (/^\d{1,4}$/.test(text) ? [text, text] : null);
+  if (!match) return text;
+  return `RA BILL -${String(match[1]).padStart(2, '0')}`;
+}
+
 function extractBillDetails(rows, type) {
-  const result = {
-    agency_name: '',
-    project_name: '',
-    bill_no: '',
-    bill_date: '',
-    billing_period: '',
-    previous_amount: 0,
-    current_amount: 0,
-    cumulative_amount: 0,
-    gst_amount: 0,
-    gross_bill: 0,
-    net_payable: 0,
-    total_amount: 0
+  const matrix = (rows || []).map(row => Array.isArray(row) ? row : Object.values(row || {}));
+  const flat = matrix.flat().map(v => String(v ?? '').trim());
+  const findInline = (patterns) => {
+    for (const row of matrix) for (const cell of row) {
+      const value = String(cell ?? '').replace(/\s+/g, ' ').trim();
+      for (const pattern of patterns) {
+        const re = new RegExp(`(?:^|\\b)${pattern}\\s*[:：-]\\s*(.+)$`, 'i');
+        const m = value.match(re);
+        if (m && m[1].trim()) return m[1].trim().replace(/^[-–—]\s*/, '');
+      }
+    }
+    return '';
   };
-
-  const allRows = (rows || []).map(row =>
-    Array.isArray(row) ? row : Object.values(row || {})
-  );
-
-  const flat = allRows.flat().map(v => String(v ?? '').trim());
-
-  function findValue(labels) {
+  const findRow = (pattern) => matrix.find(row => row.some(c => pattern.test(String(c ?? '')))) || [];
+  const cell = (row, index) => row?.[index] ?? '';
+  const findLabelValue = (labels) => {
     const wanted = labels.map(norm);
-
-    for (const row of allRows) {
-      for (let i = 0; i < row.length; i++) {
-        const cell = norm(row[i]);
-
-        if (wanted.some(label =>
-          cell === label ||
-          cell.startsWith(label) ||
-          cell.includes(label)
-        )) {
-          for (let j = i + 1; j < row.length; j++) {
-            const value = String(row[j] ?? '').trim();
-            if (value && !wanted.includes(norm(value))) return value;
-          }
-
-          const nextRow = allRows[allRows.indexOf(row) + 1];
-          if (nextRow) {
-            for (const value of nextRow) {
-              if (String(value ?? '').trim()) return String(value).trim();
-            }
+    for (let r = 0; r < matrix.length; r++) {
+      const row = matrix[r] || [];
+      for (let c = 0; c < row.length; c++) {
+        const v = norm(row[c]);
+        if (wanted.some(w => v === w || v.startsWith(w))) {
+          for (let k = c + 1; k < row.length; k++) if (String(row[k] ?? '').trim()) return row[k];
+          for (let rr = r + 1; rr < Math.min(matrix.length, r + 3); rr++) {
+            const next = (matrix[rr] || []).find(x => String(x ?? '').trim());
+            if (next !== undefined) return next;
           }
         }
       }
     }
-
     return '';
+  };
+
+  const result = {
+    agency_name: '', project_name: '', bill_no: '', bill_date: '', billing_period: '',
+    previous_amount: 0, current_amount: 0, cumulative_amount: 0,
+    gst_amount: 0, gross_bill: 0, net_payable: 0, total_amount: 0
+  };
+
+  if (type === 'vendor') {
+    result.agency_name = findInline(['Name of Agency']) || flat.find(v => /P\s*E\s*ERECTORS|PRIVATE LIMITED/i.test(v)) || '';
+    result.bill_no = normalizeRaBillNo(findInline(['Bill No', 'RA Bill No']) || findLabelValue(['bill no', 'bill number']));
+    result.bill_date = excelDate(findInline(['Date']) || findLabelValue(['bill date', 'date of bill']));
+    result.billing_period = findInline(['Billing Period']) || findLabelValue(['billing period']);
+
+    const grossRow = findRow(/gross\s+bill\s+value/i);
+    const netRow = findRow(/net\s+payable\s+amount/i);
+    const totalRow = findRow(/grand\s+total\s+amount/i);
+    result.gross_bill = num(cell(grossRow, 10)) || num(cell(totalRow, 10));
+    result.net_payable = num(cell(netRow, 10));
+    result.previous_amount = num(cell(totalRow, 9));
+    result.current_amount = num(cell(totalRow, 10));
+    result.cumulative_amount = num(cell(totalRow, 11));
+    result.total_amount = result.gross_bill || result.current_amount || result.cumulative_amount;
+  } else {
+    result.project_name = String(matrix?.[0]?.[0] || 'BHEL PSER LARA SITE').trim();
+    result.bill_no = normalizeRaBillNo(findInline(['BILL NO', 'Bill No', 'RA Bill No']) || findLabelValue(['bill no', 'bill number']));
+    result.billing_period = findInline(['Billing Period']) || findLabelValue(['billing period']);
+    const customerDateRow = matrix.find(row => row.some(value => norm(value) === 'date')) || [];
+    const customerDateCol = customerDateRow.findIndex(value => norm(value) === 'date');
+    result.bill_date = excelDate((customerDateCol >= 0 ? customerDateRow[customerDateCol + 1] : '') || findInline(['Date']) || findLabelValue(['bill date', 'date of bill']));
+    const totalRow = findRow(/total\s+amount/i);
+    // Customer template: amount claimed columns J/K/L = previous/current/cumulative.
+    result.previous_amount = num(cell(totalRow, 9));
+    result.current_amount = num(cell(totalRow, 10));
+    result.cumulative_amount = num(cell(totalRow, 11));
+    result.gross_bill = result.current_amount;
+    result.total_amount = result.current_amount || result.cumulative_amount;
+    result.net_payable = result.current_amount;
+    result.project_name = result.project_name || 'BHEL PSER LARA SITE';
   }
-
-  const billNo = findValue([
-    'bill no', 'bill number', 'ra bill no', 'ra no',
-    'running account bill no', 'invoice no'
-  ]);
-
-  const billDate = findValue([
-    'bill date', 'invoice date', 'date of bill',
-    'ra bill date'
-  ]);
-
-  const periodFrom = findValue([
-    'billing period', 'period', 'bill period',
-    'period of bill'
-  ]);
-
-  const agency = findValue([
-    'agency name', 'contractor name', 'vendor name',
-    'name of contractor', 'name of agency'
-  ]);
-
-  const project = findValue([
-    'project name', 'customer name', 'client name'
-  ]);
-
-  const previous = findValue([
-    'previous amount', 'previous bill amount',
-    'previous claim', 'previous cumulative'
-  ]);
-
-  const current = findValue([
-    'current amount', 'current bill amount',
-    'current claim', 'amount of this bill',
-    'this bill amount'
-  ]);
-
-  const cumulative = findValue([
-    'cumulative amount', 'cumulative bill amount',
-    'total cumulative', 'upto date amount',
-    'up to date amount'
-  ]);
-
-  const gst = findValue([
-    'gst amount', 'total gst', 'gst'
-  ]);
-
-  const gross = findValue([
-    'gross bill', 'gross amount', 'gross bill amount',
-    'total gross'
-  ]);
-
-  const net = findValue([
-    'net payable', 'net amount payable',
-    'amount payable', 'net payment'
-  ]);
-
-  result.bill_no = billNo;
-  result.bill_date = excelDate(billDate);
-  result.billing_period = periodFrom;
-  result.agency_name = agency;
-  result.project_name = project;
-
-  result.previous_amount = num(previous);
-  result.current_amount = num(current);
-  result.cumulative_amount = num(cumulative);
-  result.gst_amount = num(gst);
-  result.gross_bill = num(gross);
-  result.net_payable = num(net);
-
-  result.total_amount =
-    result.gross_bill ||
-    result.current_amount ||
-    result.cumulative_amount ||
-    0;
-
-  if (type === 'vendor' && !result.agency_name) {
-    result.agency_name = flat.find(v =>
-      /private limited|pvt\.?\s*ltd|erectors|contractor/i.test(v)
-    ) || '';
-  }
-
-  if (type === 'customer' && !result.project_name) {
-    result.project_name = flat.find(v =>
-      /bhel|site|project/i.test(v)
-    ) || '';
-  }
-
   return result;
 }
 
@@ -345,6 +286,8 @@ function App() {
   const [vendorOriginalFile, setVendorOriginalFile] = useState(null);
   const [customerOriginalFile, setCustomerOriginalFile] = useState(null);
   const [selectedBill, setSelectedBill] = useState(null);
+  const [customerUnlocked, setCustomerUnlocked] = useState(false);
+  const [customerLockInput, setCustomerLockInput] = useState('');
 
   const [paymentForm, setPaymentForm] = useState({
     bill_id: '',
@@ -967,11 +910,11 @@ function App() {
     setBusy(true);
 
     let originalFile = null;
-    try { originalFile = await uploadBillOriginal(vendorOriginalFile, 'vendor', vendorForm.bill_no); }
+    try { originalFile = await uploadBillOriginal(vendorOriginalFile, 'vendor', normalizeRaBillNo(vendorForm.bill_no)); }
     catch (err) { setBusy(false); setNotice(err.message); return; }
 
     const payload = {
-      ...vendorForm, total_amount: num(vendorForm.total_amount),
+      ...vendorForm, bill_no: normalizeRaBillNo(vendorForm.bill_no), total_amount: num(vendorForm.total_amount),
       net_payable: num(vendorForm.net_payable),
       abstract_data: { ...data, archive: originalFile, archive_folder: '01_Vendor_Bills' }
     };
@@ -1034,11 +977,11 @@ function App() {
     setBusy(true);
 
     let originalFile = null;
-    try { originalFile = await uploadBillOriginal(customerOriginalFile, 'customer', customerForm.bill_no); }
+    try { originalFile = await uploadBillOriginal(customerOriginalFile, 'customer', normalizeRaBillNo(customerForm.bill_no)); }
     catch (err) { setBusy(false); setNotice(err.message); return; }
 
     const payload = {
-      ...customerForm, total_amount: num(customerForm.total_amount),
+      ...customerForm, bill_no: normalizeRaBillNo(customerForm.bill_no), total_amount: num(customerForm.total_amount),
       abstract_data: { ...data, archive: originalFile, archive_folder: '02_Customer_Bills' }
     };
 
@@ -1482,7 +1425,7 @@ function App() {
             <div className="welcome"><div><span className="eyebrow">PERMANENT RECORD ARCHIVE</span><h1>Master Records</h1><p>सभी पुराने और नए रिकॉर्ड अलग-अलग सेक्शन में सुरक्षित</p></div><button className="secondary" onClick={loadAll}><RefreshCw size={16}/> Refresh Records</button></div>
             <div className="stats"><Stat title="01 Vendor Bills" value={bills.length}/><Stat title="02 Customer Bills" value={customerBills.length}/><Stat title="03 DPR Records" value={rows.length}/><Stat title="04 Drawings" value={docs.length}/><Stat title="05 Vendor Payments" value={vendorPayments.length}/><Stat title="06 Customer Receipts" value={customerReceipts.length}/></div>
             <div className="panel"><h2>01 · Vendor Bills Folder</h2><BillTable bills={bills} type="vendor" paidFor={paidFor} outstanding={vendorOutstanding} onView={setSelectedBill}/></div>
-            <div className="panel"><h2>02 · Customer Bills Folder</h2><BillTable bills={customerBills} type="customer" paidFor={receivedFor} outstanding={customerOutstanding} onView={setSelectedBill}/></div>
+            <div className="panel"><h2>02 · Customer Bills Folder</h2>{customerUnlocked ? <BillTable bills={customerBills} type="customer" paidFor={receivedFor} outstanding={customerOutstanding} onView={setSelectedBill}/> : <p>Customer Bill सुरक्षित है। इसे देखने के लिए Customer Bills खोलकर पासवर्ड डालें।</p>}</div>
             <div className="panel"><h2>03 · DPR Records Folder</h2><DprTable rows={rows.slice(0,100)} onDelete={delDpr}/><p>दिखाए गए नवीनतम 100 रिकॉर्ड। कुल रिकॉर्ड: {rows.length}</p></div>
             <div className="panel"><h2>04 · Drawings Folder</h2><DataTable rows={docs} columns={['file_name','department','storage_path','created_at']}/></div>
             <div className="panel"><h2>05 · Vendor Payment Records</h2><DataTable rows={vendorPayments} columns={['payment_date','bill_id','amount','reference_no','remarks']}/></div>
@@ -1649,6 +1592,9 @@ function App() {
                 >
                   <Download size={16} />
                   Export Register
+                </button>
+                <button className="secondary" onClick={() => { setCustomerUnlocked(false); setSelectedBill(null); setCustomerLockInput(''); }}>
+                  <LockKeyhole size={16} /> Lock Customer Bills
                 </button>
               </div>
 
@@ -1887,7 +1833,20 @@ function App() {
             </>
           )}
 
-          {tab === 'customer' && (
+          {tab === 'customer' && !customerUnlocked && (
+            <div className="panel" style={{maxWidth:520, margin:'50px auto', textAlign:'center'}}>
+              <LockKeyhole size={38}/>
+              <h1>Customer Bill Locked</h1>
+              <p>Customer Bill सेक्शन खोलने के लिए पासवर्ड डालें।</p>
+              <form onSubmit={e => { e.preventDefault(); if (customerLockInput === '22334455') { setCustomerUnlocked(true); setCustomerLockInput(''); setNotice('Customer Bill खुल गया।'); } else setNotice('गलत पासवर्ड। कृपया दोबारा प्रयास करें।'); }}>
+                <input type="password" value={customerLockInput} onChange={e => setCustomerLockInput(e.target.value)} placeholder="Customer Bill Password" autoComplete="off" required/>
+                <button className="primary full" type="submit"><LockKeyhole size={16}/> Unlock Customer Bill</button>
+              </form>
+              {notice && <p>{notice}</p>}
+            </div>
+          )}
+
+          {tab === 'customer' && customerUnlocked && (
             <>
               <div className="welcome">
                 <div>
@@ -2246,7 +2205,7 @@ function App() {
                 </div>
               </div>
 
-              <p><b>Bill No:</b> {selectedBill.bill.bill_no}</p>
+              <p><b>Bill No:</b> {normalizeRaBillNo(selectedBill.bill.bill_no)}</p>
 
               <p>
                 <b>Bill Date:</b> {selectedBill.bill.bill_date}
@@ -2367,7 +2326,7 @@ function DprTable({ rows, onDelete }) {
               <td>{r.description}</td>
               <td>{r.quantity}</td>
               <td>{r.unit_weight ?? 0}</td>
-              <td>{num(r['quantity']) * num(r['unit_weight'])}</td>
+              <td>{weight(r.quantity, r.unit_weight)}</td>
               <td>{r.pre_assembly}</td>
               <td>{r.placement}</td>
               <td>{r.alignment}</td>
@@ -2443,7 +2402,7 @@ function BillTable({ bills, type, paidFor, outstanding, onView }) {
         <tbody>
           {bills.map(b => (
             <tr key={b.id}>
-              <td><button className="link" onClick={() => onView({ bill: b, type })}>{b.bill_no}</button></td>
+              <td><button className="link" onClick={() => onView({ bill: b, type })}>{normalizeRaBillNo(b.bill_no)}</button></td>
               <td>
                 {type === 'vendor' ? b.agency_name : b.project_name}
               </td>
