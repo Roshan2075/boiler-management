@@ -246,6 +246,8 @@ function App() {
   const [filterMonth, setFilterMonth] = useState(new Date().getMonth());
   const [filterYear, setFilterYear] = useState(new Date().getFullYear());
   const [filterDept, setFilterDept] = useState('All');
+  const [selectedDprDate, setSelectedDprDate] = useState(new Date().toISOString().slice(0, 10));
+  const [showWeightDetails, setShowWeightDetails] = useState(false);
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [mobile, setMobile] = useState(false);
@@ -407,7 +409,13 @@ function App() {
     }
   }
 
+  const isAdmin = String(session?.user?.email || '').toLowerCase() === ADMIN_EMAIL.toLowerCase();
+
   async function adminToken() {
+    if (!isAdmin) {
+      setNotice('यह सुविधा केवल अधिकृत Admin के लिए उपलब्ध है।');
+      return null;
+    }
     const p = window.prompt('Admin Password डालें:');
     if (!p) return null;
 
@@ -1091,10 +1099,13 @@ function App() {
   async function uploadDrawing(e) {
     const file = e.target.files?.[0];
     if (!file) return;
+    const token = await adminToken();
+    if (!token) { e.target.value = ''; return; }
 
     setBusy(true);
 
-    const path = `${session.user.id}/${Date.now()}-${file.name}`;
+    const safeName = String(file.name || 'drawing').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = `${session.user.id}/04_Drawings/${Date.now()}_${safeName}`;
 
     const up = await supabase.storage
       .from('drawings')
@@ -1108,6 +1119,7 @@ function App() {
     }
 
     const { error } = await supabase.rpc('create_drawing_record', {
+      p_token: token,
       p_payload: {
         file_name: file.name,
         storage_path: path,
@@ -1132,7 +1144,17 @@ function App() {
   }
 
   function printAbstract() {
-    window.print();
+    const source = document.querySelector('.bill-view');
+    if (!source) { setNotice('पहले कोई Bill खोलें।'); return; }
+    const printable = source.cloneNode(true);
+    printable.querySelectorAll('button, input, .panel-head .actions').forEach(el => el.remove());
+    const win = window.open('', '_blank', 'width=1200,height=850');
+    if (!win) { setNotice('Print popup blocked है। Browser में popup allow करें।'); return; }
+    win.document.open();
+    win.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Selected Bill</title>
+      <style>@page{size:landscape;margin:10mm}body{font-family:Arial,sans-serif;color:#111;margin:0}.bill-view{width:100%}h2{font-size:18px;margin:0 0 12px}p{font-size:11px;margin:5px 0}.table-wrap{width:100%;overflow:visible}table{width:100%;border-collapse:collapse;table-layout:auto}td,th{border:1px solid #555;padding:4px;font-size:9px;white-space:pre-wrap}tr{break-inside:avoid}*{box-sizing:border-box}</style>
+      </head><body>${printable.outerHTML}<script>window.onload=()=>{window.focus();window.print()}</script></body></html>`);
+    win.document.close();
   }
 
   if (!supabase) return <Setup />;
@@ -1190,11 +1212,13 @@ function App() {
   const nav = [
     ['dashboard', 'Dashboard', LayoutDashboard],
     ['master', 'Master Dashboard', LayoutDashboard],
-    ['records', 'Master Records', FolderOpen],
+    ['records', 'Folder Overview', FolderOpen],
     ['dpr', 'DPR Register', ClipboardList],
     ['ra', 'Vendor Bills', Receipt],
     ['customer', 'Customer Bills', FileText],
-    ['drawings', 'Drawing Folder', FolderOpen]
+    ['drawings', 'Drawing Folder', FolderOpen],
+    ['vendorPayments', 'Vendor Payments', IndianRupee],
+    ['customerReceipts', 'Customer Receipts', IndianRupee]
   ];
 
   return (
@@ -1278,7 +1302,7 @@ function App() {
             </div>
           )}
 
-          {session.user.email?.toLowerCase() === ADMIN_EMAIL && (
+          {isAdmin && (
             <div className="panel">
               <button
                 className="secondary"
@@ -1351,6 +1375,11 @@ function App() {
                 <Stat title="Drawings" value={docs.length} />
               </div>
 
+              <div className="panel">
+                <button className="secondary" type="button" onClick={() => setShowWeightDetails(v => !v)}>{showWeightDetails ? '− Hide' : '+ Show'} Total Weight Details</button>
+                {showWeightDetails && <div className="dept-grid">{DEPTS.map(d=>{const a=rows.filter(r=>r.department===d);return <div className="dept" key={d}><b>{d}</b><strong>{a.reduce((t,r)=>t+num(r.weight),0).toLocaleString('en-IN')}</strong><small>{a.length} DPR entries</small></div>})}</div>}
+              </div>
+
               <div className="stats">
                 <Stat title="Vendor Billed" value={money(vendorTotals.billed)} />
                 <Stat title="Vendor Paid" value={money(vendorTotals.paid)} />
@@ -1395,7 +1424,7 @@ function App() {
 
               <div className="panel">
                 <h2>Recent DPR Entries</h2>
-                <DprTable rows={rows.slice(0, 8)} onDelete={delDpr} />
+                <DprTable rows={rows.slice(0, 8)} onDelete={delDpr} canDelete={isAdmin} />
               </div>
             </>
           )}
@@ -1422,15 +1451,15 @@ function App() {
           })()}
 
           {tab === 'records' && <>
-            <div className="welcome"><div><span className="eyebrow">PERMANENT RECORD ARCHIVE</span><h1>Master Records</h1><p>सभी पुराने और नए रिकॉर्ड अलग-अलग सेक्शन में सुरक्षित</p></div><button className="secondary" onClick={loadAll}><RefreshCw size={16}/> Refresh Records</button></div>
-            <div className="stats"><Stat title="01 Vendor Bills" value={bills.length}/><Stat title="02 Customer Bills" value={customerBills.length}/><Stat title="03 DPR Records" value={rows.length}/><Stat title="04 Drawings" value={docs.length}/><Stat title="05 Vendor Payments" value={vendorPayments.length}/><Stat title="06 Customer Receipts" value={customerReceipts.length}/></div>
-            <div className="panel"><h2>01 · Vendor Bills Folder</h2><BillTable bills={bills} type="vendor" paidFor={paidFor} outstanding={vendorOutstanding} onView={setSelectedBill}/></div>
-            <div className="panel"><h2>02 · Customer Bills Folder</h2>{customerUnlocked ? <BillTable bills={customerBills} type="customer" paidFor={receivedFor} outstanding={customerOutstanding} onView={setSelectedBill}/> : <p>Customer Bill सुरक्षित है। इसे देखने के लिए Customer Bills खोलकर पासवर्ड डालें।</p>}</div>
-            <div className="panel"><h2>03 · DPR Records Folder</h2><DprTable rows={rows.slice(0,100)} onDelete={delDpr}/><p>दिखाए गए नवीनतम 100 रिकॉर्ड। कुल रिकॉर्ड: {rows.length}</p></div>
-            <div className="panel"><h2>04 · Drawings Folder</h2><DataTable rows={docs} columns={['file_name','department','storage_path','created_at']}/></div>
-            <div className="panel"><h2>05 · Vendor Payment Records</h2><DataTable rows={vendorPayments} columns={['payment_date','bill_id','amount','reference_no','remarks']}/></div>
-            <div className="panel"><h2>06 · Customer Receipt Records</h2><DataTable rows={customerReceipts} columns={['receipt_date','bill_id','amount','reference_no','remarks']}/></div>
-            <div className="panel"><b>Archive सुरक्षा:</b> नया Excel अलग unique filename से Storage के drawings bucket में Master_Records folder के अंतर्गत रखा जाता है। Existing bill/DPR/drawing records को इस स्क्रीन से delete नहीं किया जाता।</div>
+            <div className="welcome"><div><span className="eyebrow">SEPARATE RECORD FOLDERS</span><h1>Folder Overview</h1><p>हर प्रकार का रिकॉर्ड अपने अलग सेक्शन में खोलें। यहाँ केवल folder count दिखता है।</p></div><button className="secondary" onClick={loadAll}><RefreshCw size={16}/> Refresh</button></div>
+            <div className="stats">
+              <Stat title="Vendor Bills" value={bills.length}/><Stat title="Customer Bills" value={customerBills.length}/><Stat title="DPR Records" value={rows.length}/><Stat title="Drawings" value={docs.length}/><Stat title="Vendor Payments" value={vendorPayments.length}/><Stat title="Customer Receipts" value={customerReceipts.length}/>
+            </div>
+            <div className="dept-grid">
+              {[
+                ['Vendor Bills','ra',bills.length],['Customer Bills','customer',customerBills.length],['DPR Records','dpr',rows.length],['Drawings','drawings',docs.length],['Vendor Payments','vendorPayments',vendorPayments.length],['Customer Receipts','customerReceipts',customerReceipts.length]
+              ].map(([label,id,count])=><button key={id} className="dept" onClick={()=>setTab(id)}><b>{label}</b><strong>{count}</strong><small>Open folder →</small></button>)}
+            </div>
           </>}
 
           {tab === 'dpr' && (
@@ -1441,7 +1470,7 @@ function App() {
                   <h1>DPR Register</h1>
                 </div>
 
-                <div className="actions">
+                {isAdmin && <div className="actions">
                   <label className="secondary upload">
                     <Upload size={16} />
                     Import Excel
@@ -1459,10 +1488,10 @@ function App() {
                     <Download size={16} />
                     Export Excel
                   </button>
-                </div>
+                </div>}
               </div>
 
-              <div className="panel">
+              {isAdmin && <div className="panel">
                 <h2>Add Daily Progress</h2>
 
                 <form className="entry-grid" onSubmit={saveDpr}>
@@ -1522,6 +1551,12 @@ function App() {
                     </button>
                   </div>
                 </form>
+              </div>}
+
+              <div className="panel">
+                <div className="panel-head"><h2>Date-wise DPR Calendar</h2><Field label="दिनांक चुनें"><input type="date" value={selectedDprDate} onChange={e => setSelectedDprDate(e.target.value)}/></Field></div>
+                <p><b>{selectedDprDate ? new Date(selectedDprDate + 'T00:00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).toUpperCase() : ''}</b> · {rows.filter(r=>r.work_date===selectedDprDate).length} records</p>
+                <DprTable rows={rows.filter(r=>r.work_date===selectedDprDate)} onDelete={delDpr} canDelete={isAdmin}/>
               </div>
 
               <div className="panel">
@@ -1565,7 +1600,7 @@ function App() {
                   </span>
                 </div>
 
-                <DprTable rows={visibleRows} onDelete={delDpr} />
+                <DprTable rows={visibleRows} onDelete={delDpr} canDelete={isAdmin} />
               </div>
             </>
           )}
@@ -1605,7 +1640,7 @@ function App() {
                 <Stat title="Outstanding" value={money(vendorTotals.billed - vendorTotals.paid)} />
               </div>
 
-              <div className="panel">
+              {isAdmin && <div className="panel">
                 <h2>Import Vendor Abstract</h2>
                 <p>
                   अपनी मौजूदा Vendor RA Bill Excel फाइल चुनें।
@@ -1652,7 +1687,9 @@ function App() {
                 )}
               </div>
 
-              <div className="panel">
+              }
+
+              {isAdmin && <div className="panel">
                 <h2>Vendor Bill Details</h2>
 
                 <form className="entry-grid" onSubmit={saveVendorBill}>
@@ -1735,6 +1772,8 @@ function App() {
                 </form>
               </div>
 
+              }
+
               <div className="panel">
                 <h2>Vendor Bill Register</h2>
                 <BillTable
@@ -1746,90 +1785,6 @@ function App() {
                 />
               </div>
 
-              <div className="panel">
-                <h2>Vendor Payment Entry</h2>
-
-                <form className="entry-grid" onSubmit={addVendorPayment}>
-                  <Field label="Select Vendor Bill">
-                    <select
-                      required
-                      value={paymentForm.bill_id}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        bill_id: e.target.value
-                      })}
-                    >
-                      <option value="">Select Bill</option>
-                      {bills.map(b => (
-                        <option key={b.id} value={b.id}>
-                          {b.agency_name} - {b.bill_no}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-
-                  <Field label="Payment Date">
-                    <input
-                      type="date"
-                      required
-                      value={paymentForm.payment_date}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        payment_date: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Payment Amount">
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="any"
-                      required
-                      value={paymentForm.amount}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        amount: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="UTR / Reference No.">
-                    <input
-                      value={paymentForm.reference_no}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        reference_no: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Remarks">
-                    <input
-                      value={paymentForm.remarks}
-                      onChange={e => setPaymentForm({
-                        ...paymentForm,
-                        remarks: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <div className="form-end">
-                    <button className="primary">
-                      <IndianRupee size={16} />
-                      Save Payment
-                    </button>
-                  </div>
-                </form>
-
-                <DataTable
-                  rows={vendorPayments}
-                  columns={[
-                    'payment_date', 'bill_id', 'amount',
-                    'reference_no', 'remarks'
-                  ]}
-                />
-              </div>
             </>
           )}
 
@@ -1878,7 +1833,7 @@ function App() {
                 <Stat title="Outstanding" value={money(customerTotals.billed - customerTotals.received)} />
               </div>
 
-              <div className="panel">
+              {isAdmin && <div className="panel">
                 <h2>Import Customer Abstract</h2>
                 <p>अपनी मौजूदा BHEL Customer RA Bill Excel फाइल चुनें।</p>
 
@@ -1921,7 +1876,9 @@ function App() {
                 )}
               </div>
 
-              <div className="panel">
+              }
+
+              {isAdmin && <div className="panel">
                 <h2>Customer Bill Details</h2>
 
                 <form className="entry-grid" onSubmit={saveCustomerBill}>
@@ -2001,6 +1958,8 @@ function App() {
                 </form>
               </div>
 
+              }
+
               <div className="panel">
                 <h2>Customer Bill Register</h2>
                 <BillTable
@@ -2012,92 +1971,34 @@ function App() {
                 />
               </div>
 
-              <div className="panel">
-                <h2>Customer Receipt Entry</h2>
-
-                <form className="entry-grid" onSubmit={addCustomerReceipt}>
-                  <Field label="Select Customer Bill">
-                    <select
-                      required
-                      value={receiptForm.bill_id}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        bill_id: e.target.value
-                      })}
-                    >
-                      <option value="">Select Bill</option>
-                      {customerBills.map(b => (
-                        <option key={b.id} value={b.id}>
-                          {b.bill_no} - {b.billing_period}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-
-                  <Field label="Receipt Date">
-                    <input
-                      type="date"
-                      required
-                      value={receiptForm.receipt_date}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        receipt_date: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Received Amount">
-                    <input
-                      type="number"
-                      min="0.01"
-                      step="any"
-                      required
-                      value={receiptForm.amount}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        amount: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Bank / Reference No.">
-                    <input
-                      value={receiptForm.reference_no}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        reference_no: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <Field label="Remarks">
-                    <input
-                      value={receiptForm.remarks}
-                      onChange={e => setReceiptForm({
-                        ...receiptForm,
-                        remarks: e.target.value
-                      })}
-                    />
-                  </Field>
-
-                  <div className="form-end">
-                    <button className="primary">
-                      <IndianRupee size={16} />
-                      Save Receipt
-                    </button>
-                  </div>
-                </form>
-
-                <DataTable
-                  rows={customerReceipts}
-                  columns={[
-                    'receipt_date', 'bill_id', 'amount',
-                    'reference_no', 'remarks'
-                  ]}
-                />
-              </div>
             </>
           )}
+
+          {tab === 'vendorPayments' && <>
+            <div className="welcome"><div><span className="eyebrow">SEPARATE FOLDER</span><h1>Vendor Payments</h1><p>Vendor Bills से जुड़े सभी भुगतान रिकॉर्ड</p></div><button className="secondary" onClick={loadAll}><RefreshCw size={16}/> Refresh</button></div>
+            {isAdmin && <div className="panel"><h2>New Vendor Payment</h2><form className="entry-grid" onSubmit={addVendorPayment}>
+              <Field label="Select Vendor Bill"><select required value={paymentForm.bill_id} onChange={e=>setPaymentForm({...paymentForm,bill_id:e.target.value})}><option value="">Select Bill</option>{bills.map(b=><option key={b.id} value={b.id}>{b.agency_name} - {b.bill_no}</option>)}</select></Field>
+              <Field label="Payment Date"><input type="date" required value={paymentForm.payment_date} onChange={e=>setPaymentForm({...paymentForm,payment_date:e.target.value})}/></Field>
+              <Field label="Payment Amount"><input type="number" min="0.01" step="any" required value={paymentForm.amount} onChange={e=>setPaymentForm({...paymentForm,amount:e.target.value})}/></Field>
+              <Field label="UTR / Reference No."><input value={paymentForm.reference_no} onChange={e=>setPaymentForm({...paymentForm,reference_no:e.target.value})}/></Field>
+              <Field label="Remarks"><input value={paymentForm.remarks} onChange={e=>setPaymentForm({...paymentForm,remarks:e.target.value})}/></Field>
+              <div className="form-end"><button className="primary" disabled={busy}><IndianRupee size={16}/> Save Payment</button></div>
+            </form></div>}
+            <div className="panel"><h2>Vendor Payment Register</h2><DataTable rows={vendorPayments} columns={['payment_date','bill_id','amount','reference_no','remarks']}/></div>
+          </>}
+
+          {tab === 'customerReceipts' && <>
+            <div className="welcome"><div><span className="eyebrow">SEPARATE FOLDER</span><h1>Customer Receipts</h1><p>Customer Bills से जुड़े सभी प्राप्त भुगतान</p></div><button className="secondary" onClick={loadAll}><RefreshCw size={16}/> Refresh</button></div>
+            {isAdmin && <div className="panel"><h2>New Customer Receipt</h2><form className="entry-grid" onSubmit={addCustomerReceipt}>
+              <Field label="Select Customer Bill"><select required value={receiptForm.bill_id} onChange={e=>setReceiptForm({...receiptForm,bill_id:e.target.value})}><option value="">Select Bill</option>{customerBills.map(b=><option key={b.id} value={b.id}>{b.bill_no} - {b.billing_period}</option>)}</select></Field>
+              <Field label="Receipt Date"><input type="date" required value={receiptForm.receipt_date} onChange={e=>setReceiptForm({...receiptForm,receipt_date:e.target.value})}/></Field>
+              <Field label="Received Amount"><input type="number" min="0.01" step="any" required value={receiptForm.amount} onChange={e=>setReceiptForm({...receiptForm,amount:e.target.value})}/></Field>
+              <Field label="Bank / Reference No."><input value={receiptForm.reference_no} onChange={e=>setReceiptForm({...receiptForm,reference_no:e.target.value})}/></Field>
+              <Field label="Remarks"><input value={receiptForm.remarks} onChange={e=>setReceiptForm({...receiptForm,remarks:e.target.value})}/></Field>
+              <div className="form-end"><button className="primary" disabled={busy}><IndianRupee size={16}/> Save Receipt</button></div>
+            </form></div>}
+            <div className="panel"><h2>Customer Receipt Register</h2><DataTable rows={customerReceipts} columns={['receipt_date','bill_id','amount','reference_no','remarks']}/></div>
+          </>}
 
           {tab === 'drawings' && (
             <>
@@ -2108,7 +2009,7 @@ function App() {
                   <p>Store and organize drawings by department.</p>
                 </div>
 
-                <label className="primary upload">
+                {isAdmin && <label className="primary upload">
                   <Upload size={16} />
                   Upload Drawing
                   <input
@@ -2116,10 +2017,10 @@ function App() {
                     accept=".pdf,.dwg,.dxf,.png,.jpg,.jpeg,.xlsx"
                     onChange={uploadDrawing}
                   />
-                </label>
+                </label>}
               </div>
 
-              <div className="panel">
+              {isAdmin && <div className="panel">
                 <Field label="Drawing Department">
                   <select
                     value={form.department}
@@ -2142,7 +2043,7 @@ function App() {
                     </div>
                   ))}
                 </div>
-              </div>
+              </div>}
 
               <div className="panel">
                 <h2>Saved Drawings</h2>
@@ -2301,7 +2202,7 @@ function Field({ label, children }) {
   );
 }
 
-function DprTable({ rows, onDelete }) {
+function DprTable({ rows, onDelete, canDelete = false }) {
   return (
     <div className="table-wrap">
       <table>
@@ -2310,8 +2211,8 @@ function DprTable({ rows, onDelete }) {
             {[
               'Date', 'Dept.', 'PG', 'MA', 'DU', 'Description',
               'Qty', 'Unit Weight', 'Total Weight', 'Pre-Assembly',
-              'Placement', 'Alignment', 'Bolting', 'Remarks', ''
-            ].map(x => <th key={x}>{x}</th>)}
+              'Placement', 'Alignment', 'Bolting', 'Remarks', ...(canDelete ? [''] : [])
+            ].map((x,i) => <th key={i}>{x}</th>)}
           </tr>
         </thead>
 
@@ -2332,14 +2233,7 @@ function DprTable({ rows, onDelete }) {
               <td>{r.alignment}</td>
               <td>{r.bolting}</td>
               <td>{r.remark}</td>
-              <td>
-                <button
-                  className="delete"
-                  onClick={() => onDelete(r.id)}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </td>
+              {canDelete && <td><button className="delete" onClick={() => onDelete(r.id)} title="Delete DPR"><Trash2 size={15}/></button></td>}
             </tr>
           ))}
         </tbody>
@@ -2353,8 +2247,12 @@ function DprTable({ rows, onDelete }) {
 }
 
 function DataTable({ rows, columns }) {
+  const [query, setQuery] = useState('');
+  const filteredRows = rows.filter(r => columns.some(c => String(r[c] ?? '').toLowerCase().includes(query.toLowerCase())));
   return (
-    <div className="table-wrap">
+    <div>
+      <div className="filters"><input value={query} onChange={e => setQuery(e.target.value)} placeholder="इस Folder में Search करें" /></div>
+      <div className="table-wrap">
       <table>
         <thead>
           <tr>
@@ -2365,7 +2263,7 @@ function DataTable({ rows, columns }) {
         </thead>
 
         <tbody>
-          {rows.map((r, i) => (
+          {filteredRows.map((r, i) => (
             <tr key={r.id || i}>
               {columns.map(c => (
                 <td key={c}>{r[c] ?? ''}</td>
@@ -2375,16 +2273,22 @@ function DataTable({ rows, columns }) {
         </tbody>
       </table>
 
-      {!rows.length && (
-        <div className="empty">No records yet.</div>
+      {!filteredRows.length && (
+        <div className="empty">कोई रिकॉर्ड नहीं मिला।</div>
       )}
+      </div>
     </div>
   );
 }
 
 function BillTable({ bills, type, paidFor, outstanding, onView }) {
+  const [query, setQuery] = useState('');
+  const filteredBills = bills.filter(b => [b.bill_no, b.agency_name, b.project_name, b.bill_date, b.billing_period]
+    .some(v => String(v ?? '').toLowerCase().includes(query.toLowerCase())));
   return (
-    <div className="table-wrap">
+    <div>
+      <div className="filters"><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Bill No., Agency, Date से Search करें" /></div>
+      <div className="table-wrap">
       <table>
         <thead>
           <tr>
@@ -2400,7 +2304,7 @@ function BillTable({ bills, type, paidFor, outstanding, onView }) {
         </thead>
 
         <tbody>
-          {bills.map(b => (
+          {filteredBills.map(b => (
             <tr key={b.id}>
               <td><button className="link" onClick={() => onView({ bill: b, type })}>{normalizeRaBillNo(b.bill_no)}</button></td>
               <td>
@@ -2431,9 +2335,10 @@ function BillTable({ bills, type, paidFor, outstanding, onView }) {
         </tbody>
       </table>
 
-      {!bills.length && (
-        <div className="empty">No bills saved yet.</div>
+      {!filteredBills.length && (
+        <div className="empty">कोई Bill नहीं मिला।</div>
       )}
+      </div>
     </div>
   );
 }
