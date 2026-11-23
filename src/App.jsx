@@ -59,6 +59,22 @@ function weight(q, u) {
   return num(q) * num(u);
 }
 
+function formatDprDate(value) {
+  if (!value) return '';
+  const d = new Date(String(value).slice(0, 10) + 'T00:00:00');
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString('en-GB', {
+    day: '2-digit', month: 'short', year: 'numeric'
+  }).toUpperCase();
+}
+
+const DPR_STAGES = [
+  { key: 'pre_assembly', label: 'Pre-Assembly' },
+  { key: 'placement', label: 'Placement' },
+  { key: 'alignment', label: 'Alignment' },
+  { key: 'bolting', label: 'Bolting' }
+];
+
 function norm(v) {
   return String(v ?? '')
     .toLowerCase()
@@ -604,8 +620,10 @@ function App() {
     const headers = [
       'Date', 'PG', 'MA', 'DU', 'Description',
       'Quantity', 'Unit Weight', 'Total Weight',
-      'Pre-Assembly Qty', 'Placement Qty',
-      'Alignment Qty', 'Bolting Qty', 'Remarks'
+      'Pre-Assembly Qty', 'Pre-Assembly Weight',
+      'Placement Qty', 'Placement Weight',
+      'Alignment Qty', 'Alignment Weight',
+      'Bolting Qty', 'Bolting Weight', 'Remarks'
     ];
 
     for (const dept of DEPTS) {
@@ -619,7 +637,7 @@ function App() {
       ];
 
       data.forEach(r => aoa.push([
-        r.work_date,
+        formatDprDate(r.work_date),
         r.pg,
         r.ma,
         r.du,
@@ -627,24 +645,24 @@ function App() {
         num(r.quantity),
         num(r.unit_weight),
         num(r.weight),
-        num(r.pre_assembly),
-        num(r.placement),
-        num(r.alignment),
-        num(r.bolting),
+        num(r.pre_assembly), weight(r.pre_assembly, r.unit_weight),
+        num(r.placement), weight(r.placement, r.unit_weight),
+        num(r.alignment), weight(r.alignment, r.unit_weight),
+        num(r.bolting), weight(r.bolting, r.unit_weight),
         r.remark || ''
       ]));
 
       const ws = XLSX.utils.aoa_to_sheet(aoa);
 
       ws['!cols'] = [
-        15, 12, 12, 12, 30, 14, 14,
-        16, 17, 15, 15, 14, 28
+        15, 12, 12, 12, 30, 14, 14, 16,
+        17, 16, 15, 16, 15, 16, 14, 15, 28
       ].map(w => ({ wch: w }));
 
       ws['!merges'] = [
-        { s: { r: 0, c: 0 }, e: { r: 0, c: 12 } },
-        { s: { r: 1, c: 0 }, e: { r: 1, c: 12 } },
-        { s: { r: 2, c: 0 }, e: { r: 2, c: 12 } }
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 16 } },
+        { s: { r: 1, c: 0 }, e: { r: 1, c: 16 } },
+        { s: { r: 2, c: 0 }, e: { r: 2, c: 16 } }
       ];
 
       XLSX.utils.book_append_sheet(wb, ws, dept);
@@ -1513,34 +1531,46 @@ function App() {
                     </select>
                   </Field>
 
-                  {[
-                    'pg', 'ma', 'du', 'description',
-                    'quantity', 'unit_weight', 'pre_assembly',
-                    'placement', 'alignment', 'bolting', 'remark'
-                  ].map(k => (
-                    <Field
-                      label={k.replaceAll('_', ' ').toUpperCase()}
-                      key={k}
-                    >
+                  {['pg', 'ma', 'du', 'description', 'quantity', 'unit_weight'].map(k => (
+                    <Field label={k.replaceAll('_', ' ').toUpperCase()} key={k}>
                       <input
-                        type={[
-                          'quantity', 'unit_weight', 'pre_assembly',
-                          'placement', 'alignment', 'bolting'
-                        ].includes(k) ? 'number' : 'text'}
+                        type={['quantity', 'unit_weight'].includes(k) ? 'number' : 'text'}
                         step="any"
                         value={form[k]}
-                        onChange={e => setForm({
-                          ...form,
-                          [k]: e.target.value
-                        })}
+                        onChange={e => setForm({ ...form, [k]: e.target.value })}
+                        required={['pg', 'ma', 'du'].includes(k)}
                       />
                     </Field>
                   ))}
 
                   <Field label="TOTAL WEIGHT (AUTO)">
+                    <input value={weight(form.quantity, form.unit_weight)} readOnly />
+                  </Field>
+
+                  {DPR_STAGES.map(stage => (
+                    <React.Fragment key={stage.key}>
+                      <Field label={`${stage.label.toUpperCase()} QTY`}>
+                        <input
+                          type="number"
+                          min="0"
+                          step="any"
+                          value={form[stage.key]}
+                          onChange={e => setForm({ ...form, [stage.key]: e.target.value })}
+                        />
+                      </Field>
+                      <Field label={`${stage.label.toUpperCase()} WEIGHT (AUTO)`}>
+                        <input
+                          value={weight(form[stage.key], form.unit_weight)}
+                          readOnly
+                        />
+                      </Field>
+                    </React.Fragment>
+                  ))}
+
+                  <Field label="REMARKS">
                     <input
-                      value={weight(form.quantity, form.unit_weight)}
-                      readOnly
+                      value={form.remark}
+                      onChange={e => setForm({ ...form, remark: e.target.value })}
                     />
                   </Field>
 
@@ -1555,7 +1585,7 @@ function App() {
 
               <div className="panel">
                 <div className="panel-head"><h2>Date-wise DPR Calendar</h2><Field label="दिनांक चुनें"><input type="date" value={selectedDprDate} onChange={e => setSelectedDprDate(e.target.value)}/></Field></div>
-                <p><b>{selectedDprDate ? new Date(selectedDprDate + 'T00:00:00').toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}).toUpperCase() : ''}</b> · {rows.filter(r=>r.work_date===selectedDprDate).length} records</p>
+                <p><b>{formatDprDate(selectedDprDate)}</b> · {rows.filter(r=>r.work_date===selectedDprDate).length} records</p>
                 <DprTable rows={rows.filter(r=>r.work_date===selectedDprDate)} onDelete={delDpr} canDelete={isAdmin}/>
               </div>
 
@@ -2210,8 +2240,11 @@ function DprTable({ rows, onDelete, canDelete = false }) {
           <tr>
             {[
               'Date', 'Dept.', 'PG', 'MA', 'DU', 'Description',
-              'Qty', 'Unit Weight', 'Total Weight', 'Pre-Assembly',
-              'Placement', 'Alignment', 'Bolting', 'Remarks', ...(canDelete ? [''] : [])
+              'Qty', 'Unit Weight', 'Total Weight',
+              'Pre-Assembly Qty', 'Pre-Assembly Weight',
+              'Placement Qty', 'Placement Weight',
+              'Alignment Qty', 'Alignment Weight',
+              'Bolting Qty', 'Bolting Weight', 'Remarks', ...(canDelete ? [''] : [])
             ].map((x,i) => <th key={i}>{x}</th>)}
           </tr>
         </thead>
@@ -2219,7 +2252,7 @@ function DprTable({ rows, onDelete, canDelete = false }) {
         <tbody>
           {rows.map(r => (
             <tr key={r.id}>
-              <td>{r.work_date}</td>
+              <td>{formatDprDate(r.work_date)}</td>
               <td>{r.department}</td>
               <td>{r.pg}</td>
               <td>{r.ma}</td>
@@ -2229,9 +2262,13 @@ function DprTable({ rows, onDelete, canDelete = false }) {
               <td>{r.unit_weight ?? 0}</td>
               <td>{weight(r.quantity, r.unit_weight)}</td>
               <td>{r.pre_assembly}</td>
+              <td>{weight(r.pre_assembly, r.unit_weight)}</td>
               <td>{r.placement}</td>
+              <td>{weight(r.placement, r.unit_weight)}</td>
               <td>{r.alignment}</td>
+              <td>{weight(r.alignment, r.unit_weight)}</td>
               <td>{r.bolting}</td>
+              <td>{weight(r.bolting, r.unit_weight)}</td>
               <td>{r.remark}</td>
               {canDelete && <td><button className="delete" onClick={() => onDelete(r.id)} title="Delete DPR"><Trash2 size={15}/></button></td>}
             </tr>
